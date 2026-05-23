@@ -5,10 +5,10 @@
 
 import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
-  AlertTriangle, Clock, MoreVertical, CheckCircle, History, RefreshCw,
+  AlertTriangle, Clock, MoreVertical, CheckCircle, History,
   Shield, UserPlus, Microscope, Search, X, Filter, ExternalLink,
   ChevronRight, Briefcase, GraduationCap, Globe, Languages, Layers,
-  Calendar, Loader2, MapPin,
+  Calendar, Loader2, MapPin, RefreshCw, CheckSquare,
 } from 'lucide-react';
 import { Candidate, CandidateDetail, AuditEvent, ReviewTask } from '../types';
 import * as api from '../api';
@@ -19,13 +19,14 @@ interface CandidatePoolProps {
   onNavigate: (screen: 'candidates' | 'jobs' | 'review' | 'audit' | 'settings') => void;
   onOpenReviewTask: (taskId: string) => void;
   onResolveCandidateDirectly: (id: string, newStatus: Candidate['complianceStatus']) => void;
+  onBulkRefresh?: (ids: string[]) => Promise<void>;
   recentLogs: AuditEvent[];
   reviewTasks: ReviewTask[];
 }
 
 const PAGE_SIZE = 10;
 
-// ─── Candidate Detail Drawer ─────────────────────────────────────────────────
+// ─── Candidate Detail Drawer ──────────────────────────────────────────────────
 
 function DetailTag({ label }: { label: string }) {
   return (
@@ -47,18 +48,11 @@ function Section({ icon, title, children }: { icon: React.ReactNode; title: stri
   );
 }
 
-function CandidateDetailDrawer({
-  candidateId,
-  onClose,
-}: {
-  candidateId: string;
-  onClose: () => void;
-}) {
+function CandidateDetailDrawer({ candidateId, onClose }: { candidateId: string; onClose: () => void }) {
   const [detail, setDetail] = useState<CandidateDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // B1 fix: use api.fetchCandidateDetail instead of raw inline fetch
   useEffect(() => {
     setLoading(true);
     setError(null);
@@ -70,122 +64,78 @@ function CandidateDetailDrawer({
 
   return (
     <>
-      {/* Backdrop */}
-      <div
-        className="fixed inset-0 bg-black/30 z-30 animate-in fade-in duration-200"
-        onClick={onClose}
-      />
-
-      {/* Drawer */}
+      <div className="fixed inset-0 bg-black/30 z-30 animate-in fade-in duration-200" onClick={onClose} />
       <aside className="fixed right-0 top-0 h-full w-full max-w-xl bg-white shadow-2xl z-40 flex flex-col animate-in slide-in-from-right duration-300 overflow-hidden">
-        {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-border-subtle shrink-0">
           <div>
-            <h3 className="font-bold text-slate-900 text-base">
-              {detail?.name ?? 'Candidate Profile'}
-            </h3>
+            <h3 className="font-bold text-slate-900 text-base">{detail?.name ?? 'Candidate Profile'}</h3>
             <p className="font-mono text-[11px] text-on-surface-variant mt-0.5">ID: {candidateId}</p>
           </div>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-surface-container cursor-pointer text-on-surface-variant">
             <X className="w-5 h-5" />
           </button>
         </div>
-
-        {/* Body */}
         <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-6 space-y-7 font-sans text-xs">
           {loading && (
             <div className="flex items-center justify-center py-16 gap-2 text-on-surface-variant">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>Loading profile…</span>
+              <Loader2 className="w-5 h-5 animate-spin" /><span>Loading profile…</span>
             </div>
           )}
           {error && (
-            <div className="p-4 bg-red-50 border border-red-200 rounded text-red-700 text-xs">
-              Failed to load: {error}
-            </div>
+            <div className="p-4 bg-red-50 border border-red-200 rounded text-red-700 text-xs">Failed to load: {error}</div>
           )}
           {detail && !loading && (
             <>
-              {/* Summary banner */}
               <div className="p-4 bg-slate-deep text-white rounded-md space-y-1">
                 <div className="font-bold text-sm">{detail.headline || detail.seniority}</div>
-                {detail.summary && (
-                  <p className="text-xs text-slate-300 leading-relaxed">{detail.summary}</p>
-                )}
+                {detail.summary && <p className="text-xs text-slate-300 leading-relaxed">{detail.summary}</p>}
                 <div className="flex flex-wrap gap-3 pt-2 text-[11px] text-slate-300 font-mono">
-                  {detail.location && (
-                    <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{detail.location}</span>
-                  )}
-                  {detail.yearsOfExperience != null && (
-                    <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{detail.yearsOfExperience} yrs exp</span>
-                  )}
+                  {detail.location && <span className="flex items-center gap-1"><MapPin className="w-3 h-3" />{detail.location}</span>}
+                  {detail.yearsOfExperience != null && <span className="flex items-center gap-1"><Calendar className="w-3 h-3" />{detail.yearsOfExperience} yrs exp</span>}
                   {detail.linkedinUrl && (
-                    <a href={detail.linkedinUrl} target="_blank" rel="noreferrer"
-                      className="flex items-center gap-1 text-indigo-300 hover:underline">
+                    <a href={detail.linkedinUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1 text-indigo-300 hover:underline">
                       <ExternalLink className="w-3 h-3" />LinkedIn
                     </a>
                   )}
                 </div>
               </div>
-
-              {/* Skills */}
               {detail.allSkills.length > 0 && (
                 <Section icon={<Layers className="w-3.5 h-3.5" />} title="Technologies Used">
-                  <div className="flex flex-wrap gap-1.5">
-                    {detail.allSkills.map((s) => <DetailTag key={s} label={s} />)}
-                  </div>
+                  <div className="flex flex-wrap gap-1.5">{detail.allSkills.map((s) => <DetailTag key={s} label={s} />)}</div>
                 </Section>
               )}
-
-              {/* Previous Jobs */}
               {detail.previousJobs.length > 0 && (
                 <Section icon={<Briefcase className="w-3.5 h-3.5" />} title="Previous Positions">
                   <ul className="space-y-1.5">
                     {detail.previousJobs.map((job, i) => (
                       <li key={i} className="flex items-start gap-2 text-on-surface">
-                        <ChevronRight className="w-3.5 h-3.5 shrink-0 mt-0.5 text-on-surface-variant" />
-                        <span>{job}</span>
+                        <ChevronRight className="w-3.5 h-3.5 shrink-0 mt-0.5 text-on-surface-variant" /><span>{job}</span>
                       </li>
                     ))}
                   </ul>
                 </Section>
               )}
-
-              {/* Study Degrees */}
               {detail.studyDegrees.length > 0 && (
                 <Section icon={<GraduationCap className="w-3.5 h-3.5" />} title="Education">
-                  <ul className="space-y-1">
-                    {detail.studyDegrees.map((d, i) => (
-                      <li key={i} className="text-on-surface">{d}</li>
-                    ))}
-                  </ul>
+                  <ul className="space-y-1">{detail.studyDegrees.map((d, i) => <li key={i} className="text-on-surface">{d}</li>)}</ul>
                 </Section>
               )}
-
-              {/* Languages */}
               {detail.languagesSpoken.length > 0 && (
                 <Section icon={<Languages className="w-3.5 h-3.5" />} title="Languages Spoken">
-                  <div className="flex flex-wrap gap-1.5">
-                    {detail.languagesSpoken.map((l) => <DetailTag key={l} label={l} />)}
-                  </div>
+                  <div className="flex flex-wrap gap-1.5">{detail.languagesSpoken.map((l) => <DetailTag key={l} label={l} />)}</div>
                 </Section>
               )}
-
-              {/* Projects */}
               {detail.projectsDeveloped.length > 0 && (
                 <Section icon={<Globe className="w-3.5 h-3.5" />} title="Projects Developed">
                   <ul className="space-y-1.5">
                     {detail.projectsDeveloped.map((p, i) => (
                       <li key={i} className="flex items-start gap-2 text-on-surface">
-                        <ChevronRight className="w-3.5 h-3.5 shrink-0 mt-0.5 text-on-surface-variant" />
-                        <span>{p}</span>
+                        <ChevronRight className="w-3.5 h-3.5 shrink-0 mt-0.5 text-on-surface-variant" /><span>{p}</span>
                       </li>
                     ))}
                   </ul>
                 </Section>
               )}
-
-              {/* GDPR / Compliance */}
               <Section icon={<Shield className="w-3.5 h-3.5" />} title="Compliance & Data">
                 <div className="bg-surface-container-low border border-border-subtle rounded p-3 space-y-2 font-mono text-[11px]">
                   <div className="flex justify-between">
@@ -196,30 +146,15 @@ function CandidateDetailDrawer({
                       : 'text-status-review'
                     }`}>{detail.complianceStatus}</span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="text-on-surface-variant">Data Region</span>
-                    <span>{detail.dataRegion || '—'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-on-surface-variant">Consent Basis</span>
-                    <span>{detail.consentBasis || '—'}</span>
-                  </div>
+                  <div className="flex justify-between"><span className="text-on-surface-variant">Data Region</span><span>{detail.dataRegion || '—'}</span></div>
+                  <div className="flex justify-between"><span className="text-on-surface-variant">Consent Basis</span><span>{detail.consentBasis || '—'}</span></div>
                   {detail.retentionUntil && (
-                    <div className="flex justify-between">
-                      <span className="text-on-surface-variant">Retention Until</span>
-                      <span>{detail.retentionUntil.slice(0, 10)}</span>
-                    </div>
+                    <div className="flex justify-between"><span className="text-on-surface-variant">Retention Until</span><span>{detail.retentionUntil.slice(0, 10)}</span></div>
                   )}
                   {detail.extractionConfidence != null && (
-                    <div className="flex justify-between">
-                      <span className="text-on-surface-variant">Extraction Confidence</span>
-                      <span>{(detail.extractionConfidence * 100).toFixed(0)}%</span>
-                    </div>
+                    <div className="flex justify-between"><span className="text-on-surface-variant">Extraction Confidence</span><span>{(detail.extractionConfidence * 100).toFixed(0)}%</span></div>
                   )}
-                  <div className="flex justify-between">
-                    <span className="text-on-surface-variant">Last Updated</span>
-                    <span>{detail.updatedAt?.slice(0, 10) || '—'}</span>
-                  </div>
+                  <div className="flex justify-between"><span className="text-on-surface-variant">Last Updated</span><span>{detail.updatedAt?.slice(0, 10) || '—'}</span></div>
                 </div>
               </Section>
             </>
@@ -238,8 +173,9 @@ export default function CandidatePool({
   onNavigate,
   onOpenReviewTask,
   onResolveCandidateDirectly,
+  onBulkRefresh,
   recentLogs,
-  reviewTasks
+  reviewTasks,
 }: CandidatePoolProps) {
   const [activeFilter, setActiveFilter] = useState<'all' | 'high-risk' | 'expiring'>('all');
   const [sortBy, setSortBy] = useState<'match' | 'name' | 'id'>('match');
@@ -252,9 +188,13 @@ export default function CandidatePool({
   const [openActionCandidateId, setOpenActionCandidateId] = useState<string | null>(null);
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
 
-  // B2 fix: ref on the action menu container to detect outside clicks
-  const actionMenuRef = useRef<HTMLDivElement>(null);
+  // Bulk selection state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkRefreshing, setBulkRefreshing] = useState(false);
+  const [bulkRefreshDone, setBulkRefreshDone] = useState(false);
 
+  // Outside-click ref for action menu
+  const actionMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!openActionCandidateId) return;
     function handleOutsideClick(e: MouseEvent) {
@@ -320,7 +260,10 @@ export default function CandidatePool({
     activeFilter !== 'all'
   ), [localSearch, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, activeFilter]);
 
-  useEffect(() => { setCurrentPage(1); }, [searchQuery, localSearch, activeFilter, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, sortBy]);
+  useEffect(() => {
+    setCurrentPage(1);
+    setSelectedIds(new Set()); // clear selection when filters change
+  }, [searchQuery, localSearch, activeFilter, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, sortBy]);
 
   const handleClearAllFilters = () => {
     setLocalSearch('');
@@ -334,6 +277,56 @@ export default function CandidatePool({
 
   const totalPages = Math.max(1, Math.ceil(filteredCandidates.length / PAGE_SIZE));
   const pagedCandidates = filteredCandidates.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  // ─── Selection helpers ────────────────────────────────────────────────────
+  const pageIds = pagedCandidates.map((c) => c.id);
+  const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
+  const somePageSelected = pageIds.some((id) => selectedIds.has(id));
+
+  const toggleSelectAll = () => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        pageIds.forEach((id) => next.delete(id));
+      } else {
+        pageIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectOne = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleBulkRefresh = async () => {
+    if (selectedIds.size === 0) return;
+    setBulkRefreshing(true);
+    setBulkRefreshDone(false);
+    try {
+      if (onBulkRefresh) {
+        await onBulkRefresh(Array.from(selectedIds));
+      } else {
+        // Stub: simulate a refresh call
+        await fetch('/api/candidates/bulk-refresh', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ids: Array.from(selectedIds) }),
+        });
+      }
+      setBulkRefreshDone(true);
+      setTimeout(() => {
+        setSelectedIds(new Set());
+        setBulkRefreshDone(false);
+      }, 1800);
+    } finally {
+      setBulkRefreshing(false);
+    }
+  };
 
   const handleStatusOverride = (candidateId: string, status: Candidate['complianceStatus']) => {
     onResolveCandidateDirectly(candidateId, status);
@@ -350,12 +343,8 @@ export default function CandidatePool({
   return (
     <div className="space-y-12 animate-in fade-in duration-300">
 
-      {/* Detail Drawer */}
       {drawerCandidateId && (
-        <CandidateDetailDrawer
-          candidateId={drawerCandidateId}
-          onClose={() => setDrawerCandidateId(null)}
-        />
+        <CandidateDetailDrawer candidateId={drawerCandidateId} onClose={() => setDrawerCandidateId(null)} />
       )}
 
       {/* Metric Cards Banner */}
@@ -501,11 +490,61 @@ export default function CandidatePool({
 
       {/* Main Candidate Table */}
       <section className="bg-white border border-border-subtle rounded overflow-hidden">
+
+        {/* ── Bulk Action Toolbar (visible when rows selected) ── */}
+        {selectedIds.size > 0 && (
+          <div
+            id="bulk-action-toolbar"
+            className="flex items-center justify-between px-6 py-3 bg-slate-deep text-white border-b border-white/10 animate-in slide-in-from-top duration-200"
+          >
+            <div className="flex items-center gap-3">
+              <CheckSquare className="w-4 h-4 text-amber-400 shrink-0" />
+              <span className="text-xs font-bold font-mono uppercase tracking-wider">
+                {selectedIds.size} candidate{selectedIds.size !== 1 ? 's' : ''} selected
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <button
+                id="bulk-refresh-btn"
+                onClick={handleBulkRefresh}
+                disabled={bulkRefreshing}
+                className="flex items-center gap-1.5 px-4 py-1.5 bg-white text-slate-deep rounded text-xs font-bold hover:bg-slate-100 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+              >
+                {bulkRefreshing ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin" />Refreshing…</>
+                ) : bulkRefreshDone ? (
+                  <><CheckCircle className="w-3.5 h-3.5 text-status-ok" />Done!</>
+                ) : (
+                  <><RefreshCw className="w-3.5 h-3.5" />Bulk Refresh LinkedIn</>
+                )}
+              </button>
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="text-white/70 hover:text-white text-[11px] font-mono underline cursor-pointer transition-colors"
+              >
+                Deselect all
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-surface-container border-b border-border-subtle">
-                <th className="px-6 py-3 font-sans font-bold text-xs text-on-surface-variant tracking-wider">NAME</th>
+                {/* Select-all checkbox */}
+                <th className="pl-4 pr-2 py-3 w-10" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    id="select-all-checkbox"
+                    type="checkbox"
+                    checked={allPageSelected}
+                    ref={(el) => { if (el) el.indeterminate = somePageSelected && !allPageSelected; }}
+                    onChange={toggleSelectAll}
+                    className="w-3.5 h-3.5 cursor-pointer accent-slate-deep"
+                    aria-label="Select all on this page"
+                  />
+                </th>
+                <th className="px-4 py-3 font-sans font-bold text-xs text-on-surface-variant tracking-wider">NAME</th>
                 <th className="px-6 py-3 font-sans font-bold text-xs text-on-surface-variant tracking-wider">SENIORITY</th>
                 <th className="px-6 py-3 font-sans font-bold text-xs text-on-surface-variant tracking-wider">TOP SKILLS</th>
                 <th className="px-6 py-3 font-sans font-bold text-xs text-on-surface-variant tracking-wider">MATCH SCORE</th>
@@ -516,7 +555,7 @@ export default function CandidatePool({
             <tbody className="divide-y divide-border-subtle select-none">
               {filteredCandidates.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="text-center py-12 text-sm text-on-surface-variant font-sans">
+                  <td colSpan={7} className="text-center py-12 text-sm text-on-surface-variant font-sans">
                     No candidates match the specified criteria. Try removing filters or changing your search terms.
                   </td>
                 </tr>
@@ -524,15 +563,31 @@ export default function CandidatePool({
                 pagedCandidates.map((candidate) => {
                   const isReviewState = candidate.complianceStatus === 'PENDING REVIEW';
                   const isExpiringState = candidate.complianceStatus === 'EXPIRING (14D)';
+                  const isSelected = selectedIds.has(candidate.id);
                   return (
                     <tr key={candidate.id}
                       onClick={() => handleOpenDrawer(candidate.id)}
                       className={`transition-all h-[56px] group cursor-pointer ${
-                        isReviewState
+                        isSelected
+                          ? 'bg-indigo-50 border-l-4 border-l-indigo-400'
+                          : isReviewState
                           ? 'bg-status-review/5 border-l-4 border-l-status-review hover:bg-status-review/10'
                           : 'hover:bg-slate-50'
                       }`}>
-                      <td className="px-6 py-3">
+
+                      {/* Row checkbox */}
+                      <td className="pl-4 pr-2 py-3 w-10" onClick={(e) => { e.stopPropagation(); toggleSelectOne(candidate.id); }}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleSelectOne(candidate.id)}
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-3.5 h-3.5 cursor-pointer accent-slate-deep"
+                          aria-label={`Select ${candidate.name}`}
+                        />
+                      </td>
+
+                      <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-full bg-surface-dim flex items-center justify-center font-bold text-xs text-primary shrink-0">
                             {candidate.imageInitials}
@@ -599,7 +654,6 @@ export default function CandidatePool({
                             </button>
                           );
                         })() : (
-                          // B2 fix: attach ref to the menu wrapper for outside-click detection
                           <div className="relative inline-block" ref={openActionCandidateId === candidate.id ? actionMenuRef : undefined}>
                             <button type="button"
                               className="text-on-surface-variant hover:text-primary transition-colors cursor-pointer p-1 rounded hover:bg-surface-container"
@@ -610,11 +664,8 @@ export default function CandidatePool({
                             </button>
                             {openActionCandidateId === candidate.id && (
                               <div className="absolute right-0 top-8 z-20 w-52 bg-white border border-border-subtle rounded-md shadow-lg py-1 font-sans">
-                                <button type="button"
-                                  onClick={() => handleOpenDrawer(candidate.id)}
-                                  className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer font-semibold">
-                                  View full profile
-                                </button>
+                                <button type="button" onClick={() => handleOpenDrawer(candidate.id)}
+                                  className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer font-semibold">View full profile</button>
                                 <button type="button" onClick={() => handleStatusOverride(candidate.id, 'COMPLIANT')}
                                   className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer">Mark compliant</button>
                                 <button type="button" onClick={() => handleStatusOverride(candidate.id, 'PENDING REVIEW')}
@@ -635,6 +686,8 @@ export default function CandidatePool({
             </tbody>
           </table>
         </div>
+
+        {/* Pagination */}
         <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-between font-sans">
           <span className="text-sm text-on-surface-variant">
             Showing {filteredCandidates.length === 0 ? 0 : Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredCandidates.length)}–{Math.min(currentPage * PAGE_SIZE, filteredCandidates.length)} of {filteredCandidates.length} candidates
@@ -648,7 +701,7 @@ export default function CandidatePool({
         </div>
       </section>
 
-      {/* Bento-style Bottom Context row */}
+      {/* Bento Bottom Row */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-6 pb-12">
         <div className="md:col-span-2 p-8 border border-border-subtle bg-slate-deep text-white relative overflow-hidden rounded-md flex flex-col justify-between min-h-[290px]">
           <div className="relative z-10 space-y-3">

@@ -14,6 +14,28 @@ export interface Candidate {
   actionsRequired?: boolean;
 }
 
+/** Extended candidate with all extracted profile fields — loaded on demand for the detail drawer. */
+export interface CandidateDetail extends Candidate {
+  headline: string;
+  summary: string;
+  location: string;
+  yearsOfExperience: number | null;
+  studyDegrees: string[];
+  languagesSpoken: string[];
+  previousJobs: string[];
+  projectsDeveloped: string[];
+  allSkills: string[];
+  linkedinUrl: string;
+  emails: string[];
+  consentBasis: string;
+  dataRegion: string;
+  retentionUntil: string;
+  extractionConfidence: number | null;
+  lastMatchScore: number | null;
+  updatedAt: string;
+  createdAt: string;
+}
+
 export interface ShortlistCandidate {
   id: string;
   name: string;

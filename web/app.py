@@ -130,6 +130,32 @@ def _map_candidate(record_id: str, rec) -> dict:
     }
 
 
+def _map_candidate_detail(record_id: str, rec) -> dict:
+    """Extended mapping exposing all extracted profile fields for the detail drawer."""
+    base = _map_candidate(record_id, rec)
+    base.update({
+        "headline": rec.profile.headline or "",
+        "summary": rec.profile.summary or "",
+        "location": rec.profile.location or "",
+        "yearsOfExperience": rec.profile.years_of_experience,
+        "studyDegrees": rec.profile.study_degrees or [],
+        "languagesSpoken": rec.profile.languages_spoken or [],
+        "previousJobs": rec.profile.previous_jobs or [],
+        "projectsDeveloped": rec.profile.projects_developed or [],
+        "allSkills": [s.upper() for s in (rec.profile.technologies_used or [])],
+        "linkedinUrl": rec.identity.linkedin_url or "",
+        "emails": rec.identity.emails or [],
+        "consentBasis": rec.compliance.consent_basis or "",
+        "dataRegion": rec.compliance.data_region or "EEA",
+        "retentionUntil": rec.compliance.retention_until or "",
+        "extractionConfidence": rec.scores.extraction_confidence,
+        "lastMatchScore": rec.scores.last_match_score,
+        "updatedAt": rec.updated_at,
+        "createdAt": rec.created_at,
+    })
+    return base
+
+
 def _candidate_record_ids() -> list[str]:
     seen: set[str] = set()
     record_ids: list[str] = []
@@ -154,6 +180,25 @@ def _candidate_record_ids() -> list[str]:
                 record_ids.append(record_id)
 
     return record_ids
+
+
+def _outreach_signals(rec) -> list[str]:
+    """Derive personalization trigger signals from a candidate record."""
+    signals = []
+    if rec.profile.technologies_used:
+        top = rec.profile.technologies_used[:3]
+        signals.append(f"Tech match: {', '.join(top)}")
+    if rec.profile.years_of_experience:
+        signals.append(f"{rec.profile.years_of_experience} yrs experience")
+    if rec.profile.location:
+        signals.append(f"Location: {rec.profile.location}")
+    if rec.profile.seniority:
+        signals.append(f"Seniority: {rec.profile.seniority}")
+    if rec.profile.study_degrees:
+        signals.append(f"Degree: {rec.profile.study_degrees[0]}")
+    if rec.profile.languages_spoken:
+        signals.append(f"Languages: {', '.join(rec.profile.languages_spoken[:2])}")
+    return signals or ["Profile extracted from CV"]
 
 
 def _map_review_task(case: dict) -> dict:
@@ -193,11 +238,12 @@ def _map_review_task(case: dict) -> dict:
     elif task_type == "OUTREACH_DRAFT":
         rec = load_record(case.get("record_id", ""))
         name = rec.identity.primary_name if rec else case.get("record_id", "")
+        signals = _outreach_signals(rec) if rec else ["Profile extracted from CV"]
         task["outreachDetails"] = {
             "targetName": name,
             "subject": f"Opportunity for {name}",
             "draftBody": case.get("draft_text") or case.get("draft_body", ""),
-            "signals": [],
+            "signals": signals,
         }
     elif task_type == "IDENTITY_CONFLICT":
         rec = load_record(case.get("record_id", ""))
@@ -273,6 +319,14 @@ async def list_candidates():
         if rec and not rec.state.archived:
             candidates.append(_map_candidate(record_id, rec))
     return candidates
+
+
+@app.get("/api/candidates/{record_id}")
+async def get_candidate(record_id: str):
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
+    return _map_candidate_detail(record_id, rec)
 
 
 @app.post("/api/candidates/ingest")

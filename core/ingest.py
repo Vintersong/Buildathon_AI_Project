@@ -101,11 +101,9 @@ def extract_text_from_file(file_path: Path) -> str:
                 for page in doc:
                     page_text = page.get_text()
                     if len(page_text.strip()) < _OCR_MIN_CHARS_PER_PAGE:
-                        # Image-based page — fall back to OCR if available
                         if _OCR_AVAILABLE:
                             page_text = _ocr_page(page)
                             ocr_used = True
-                        # else: keep whatever sparse text was extracted
                     full_text += page_text
             if ocr_used:
                 print(f"[ingest] OCR fallback used for {file_path.name}")
@@ -119,6 +117,94 @@ def extract_text_from_file(file_path: Path) -> str:
             return f.read()
     else:
         raise ValueError(f"Unsupported file extension: {ext}")
+
+
+def _merge_record(record: CandidateRecord, extraction, now: str) -> list[dict]:
+    """
+    Merge a new extraction into an existing record.
+
+    Strategy:
+    - OVERWRITE: point-in-time fields where the newest CV is ground truth
+      (seniority, years_of_experience, location, summary, headline,
+       primary_name, linkedin_url)
+    - UNION (order-preserving dedup): accumulative fields where history
+      must be preserved (technologies_used, study_degrees, languages_spoken,
+      previous_jobs, projects_developed, emails)
+
+    Returns a list of change dicts for the provenance audit event.
+    """
+    changes = []
+
+    # --- OVERWRITE fields ---
+    overwrite_map = [
+        ("profile", "seniority",           extraction.seniority),
+        ("profile", "years_of_experience",  extraction.years_of_experience),
+        ("profile", "location",             extraction.location),
+        ("profile", "summary",              extraction.summary),
+        ("profile", "headline",             extraction.headline if hasattr(extraction, "headline") else None),
+        ("identity", "primary_name",        extraction.name),
+        ("identity", "linkedin_url",        extraction.linkedin_url),
+    ]
+    for section, field, new_val in overwrite_map:
+        if new_val is None:
+            continue
+        obj = getattr(record, section)
+        old_val = getattr(obj, field, None)
+        if old_val != new_val:
+            setattr(obj, field, new_val)
+            changes.append({
+                "operation": "replace",
+                "path": f"/{section}/{field}",
+                "old_value": old_val,
+                "new_value": new_val,
+            })
+
+    # --- UNION fields (order-preserving, case-sensitive dedup) ---
+    def _union(existing: list, incoming: list, path: str) -> list:
+        existing = existing or []
+        incoming = incoming or []
+        merged = list(dict.fromkeys(existing + incoming))
+        added = [x for x in incoming if x not in set(existing)]
+        if added:
+            changes.append({"operation": "union", "path": path, "added": added})
+        return merged
+
+    record.profile.technologies_used = _union(
+        record.profile.technologies_used,
+        extraction.technologies_used,
+        "/profile/technologies_used",
+    )
+    record.profile.study_degrees = _union(
+        record.profile.study_degrees,
+        extraction.study_degrees,
+        "/profile/study_degrees",
+    )
+    record.profile.languages_spoken = _union(
+        record.profile.languages_spoken,
+        extraction.languages_spoken,
+        "/profile/languages_spoken",
+    )
+    record.profile.previous_jobs = _union(
+        record.profile.previous_jobs,
+        extraction.previous_jobs,
+        "/profile/previous_jobs",
+    )
+    record.profile.projects_developed = _union(
+        record.profile.projects_developed,
+        extraction.projects_developed,
+        "/profile/projects_developed",
+    )
+    record.identity.emails = _union(
+        record.identity.emails,
+        extraction.emails,
+        "/identity/emails",
+    )
+
+    # Confidence always takes the latest value
+    record.scores.extraction_confidence = extraction.extraction_confidence
+    record.updated_at = now
+
+    return changes
 
 
 def ingest_file(file_path: Path, source_type: str = "document", force: bool = False) -> str:
@@ -199,20 +285,9 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
                 human_review_required=(extraction.extraction_confidence < 0.75),
             ),
         )
+        merge_changes = [{"operation": "create", "path": "/", "value": "initial_extraction"}]
     else:
-        # Merge into existing record
-        record.updated_at = now
-        record.profile.technologies_used = list(
-            set(record.profile.technologies_used) | set(extraction.technologies_used)
-        )
-        existing_jobs = set(record.profile.previous_jobs)
-        for job in extraction.previous_jobs:
-            if job not in existing_jobs:
-                record.profile.previous_jobs.append(job)
-                existing_jobs.add(job)
-        if extraction.summary:
-            record.profile.summary = extraction.summary
-        record.scores.extraction_confidence = extraction.extraction_confidence
+        merge_changes = _merge_record(record, extraction, now)
 
     # 7. Provenance Event
     event = {
@@ -229,7 +304,7 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
             "tool": "record_ingest",
         },
         "model": model_info,
-        "changes": [{"operation": "replace", "path": "/", "value": "full_extraction"}],
+        "changes": merge_changes,
         "review": {
             "required": record.compliance.human_review_required,
             "reason": "low_extraction_confidence" if record.compliance.human_review_required else None,

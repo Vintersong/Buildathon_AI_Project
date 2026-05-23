@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { Sparkles, Send, X, Bot, User, Trash2, Cpu, RefreshCw, Terminal, CheckCircle, Briefcase } from 'lucide-react';
 import { Candidate, JobRequirement, ReviewTask } from '../types';
 
+const LS_KEY = 'bld_ai_chats';
+
 interface AIAgentSidebarProps {
   isOpen: boolean;
   onClose: () => void;
@@ -19,6 +21,41 @@ export interface Message {
   actionCard?: { type: string; title: string; subtitle: string };
 }
 
+const DEFAULT_MESSAGES: Message[] = [
+  {
+    role: 'assistant',
+    content: `Hello! I am the **Bloodhound AI Copilot**.
+
+I have real-time access to the talent pool and job matrix. You can ask me to:
+- **Create jobs**: "Create a job for a Senior Python Developer in Berlin"
+- **Search jobs**: "Find all remote engineering roles"
+- **Audit compliance**: "What GDPR tasks are pending?"
+- **Pool overview**: "How many candidates do we have?"`,
+    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  }
+];
+
+function loadMessages(): Message[] {
+  try {
+    const stored = localStorage.getItem(LS_KEY);
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {
+    // corrupted storage — fall back to defaults
+  }
+  return DEFAULT_MESSAGES;
+}
+
+function saveMessages(msgs: Message[]) {
+  try {
+    localStorage.setItem(LS_KEY, JSON.stringify(msgs));
+  } catch {
+    // storage quota exceeded — ignore
+  }
+}
+
 export default function AIAgentSidebar({
   isOpen,
   onClose,
@@ -28,23 +65,15 @@ export default function AIAgentSidebar({
   onJobCreated,
   onNavigate,
 }: AIAgentSidebarProps) {
-  const [messages, setMessages] = useState<Message[]>([
-    {
-      role: 'assistant',
-      content: `Hello! I am the **Bloodhound AI Copilot**.
-
-I have real-time access to the talent pool and job matrix. You can ask me to:
-- **Create jobs**: "Create a job for a Senior Python Developer in Berlin"
-- **Search jobs**: "Find all remote engineering roles"
-- **Audit compliance**: "What GDPR tasks are pending?"
-- **Pool overview**: "How many candidates do we have?"`,
-      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    }
-  ]);
-
+  const [messages, setMessages] = useState<Message[]>(loadMessages);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Persist messages to localStorage whenever they change
+  useEffect(() => {
+    saveMessages(messages);
+  }, [messages]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -132,13 +161,15 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
   };
 
   const clearChat = () => {
-    setMessages([
+    const reset: Message[] = [
       {
         role: 'assistant',
         content: "Context cleared. How can I assist? Try: _\"Create a job for a Senior Python Developer\"_ or _\"Show me all active roles\"_.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
-    ]);
+    ];
+    setMessages(reset);
+    saveMessages(reset);
   };
 
   const samplePrompts = [
@@ -148,32 +179,24 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
     "What GDPR compliance tasks are pending?"
   ];
 
-  // A bespoke markdown style inline compiler to process lists, bold text, headers, and code snippets safely and elegantly
   const formatMarkdown = (text: string) => {
     const lines = text.split("\n");
     return lines.map((line, idx) => {
       let content = line;
       let className = "text-xs leading-relaxed break-words font-sans";
 
-      // 1. Double line space / Paragraph block
       if (content.trim() === "") {
         return <div key={idx} className="h-2" />;
       }
-
-      // 2. Headings
       if (content.startsWith("### ")) {
         return <h4 key={idx} className="text-xs font-mono font-bold text-bloodhound-crimson mt-3 mb-1 uppercase tracking-wider">{content.substring(4)}</h4>;
       }
       if (content.startsWith("## ") || content.startsWith("# ")) {
         return <h3 key={idx} className="text-sm font-bold text-slate-deep mt-4 mb-1 border-b border-gray-100 pb-0.5">{content.replace(/^#+\s+/, "")}</h3>;
       }
-
-      // 3. Alerts or System indicators
       if (content.startsWith("❌") || content.startsWith("⚠️") || content.startsWith("✔")) {
         className += " py-1.5 px-2 bg-red-50/70 border-l-2 border-red-400 rounded-r text-[11px] text-red-900";
       }
-
-      // 4. Bullet lists
       if (content.trim().startsWith("- ") || content.trim().startsWith("* ")) {
         const raw = content.trim().substring(2);
         return (
@@ -182,8 +205,6 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
           </li>
         );
       }
-
-      // 5. Normal lines
       return (
         <p key={idx} className={className}>
           {parseInlineStyles(content)}
@@ -193,16 +214,9 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
   };
 
   const parseInlineStyles = (rawText: string) => {
-    let text = rawText;
-
-    // Fast inline bold ** and code ` matcher
     const regex = /(\*\*.*?\*\*|`.*?`)/g;
-    const splitParts = text.split(regex);
-
-    if (splitParts.length === 1) {
-      return text;
-    }
-
+    const splitParts = rawText.split(regex);
+    if (splitParts.length === 1) return rawText;
     return splitParts.map((part, i) => {
       if (part.startsWith("**") && part.endsWith("**")) {
         return <strong key={i} className="font-bold text-slate-deep">{part.slice(2, -2)}</strong>;
@@ -231,7 +245,7 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
             <h3 className="font-sans font-bold text-sm leading-tight text-white flex items-center gap-1.5">
               <span>Bloodhound AI Copilot</span>
             </h3>
-            <p className="text-[10px] text-white/65 font-mono">MODEL SHARD: GEMINI-3.5-FLASH</p>
+            <p className="text-[10px] text-white/65 font-mono">MODEL SHARD: GEMINI-2.5-FLASH</p>
           </div>
         </div>
 
@@ -279,14 +293,12 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
               key={index}
               className={`flex gap-2.5 max-w-[88%] ${isAI ? 'mr-auto' : 'ml-auto flex-row-reverse'}`}
             >
-              {/* Profile node */}
               <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 border text-[11px] font-bold ${
                 isAI ? 'bg-amber-50 border-amber-200 text-amber-600' : 'bg-slate-deep border-slate-600 text-white'
               }`}>
                 {isAI ? <Bot className="w-3.5 h-3.5" /> : <User className="w-3.5 h-3.5" />}
               </div>
 
-              {/* Chat bubble */}
               <div className="space-y-1">
                 <div className={`p-3 rounded-lg border text-xs shadow-xs transition-shadow ${
                   isAI
@@ -298,7 +310,6 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
                   </div>
                 </div>
 
-                {/* Action confirmation card */}
                 {msg.actionCard?.type === 'job_created' && (
                   <div
                     className="mt-1.5 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2.5 cursor-pointer hover:bg-emerald-100 transition-colors"
@@ -338,7 +349,6 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
         )}
       </div>
 
-      {/* Suggested chips panel */}
       {messages.length < 3 && !isLoading && (
         <div className="px-4 py-2 bg-slate-50 border-t border-border-subtle shrink-0">
           <p className="text-[10px] font-bold font-mono text-slate-500 uppercase tracking-wider mb-1.5 flex items-center gap-1">
@@ -360,7 +370,6 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
         </div>
       )}
 
-      {/* Message Chat Input Box */}
       <div className="p-4 bg-white border-t border-border-subtle shrink-0">
         <form 
           onSubmit={(e) => {

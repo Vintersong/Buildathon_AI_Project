@@ -4,7 +4,9 @@
  */
 
 import { useState } from 'react';
-import { Settings, Shield, Cpu, RefreshCw, Key, HelpCircle, HardDrive } from 'lucide-react';
+import { Settings, Shield, Cpu, Key, HelpCircle, HardDrive } from 'lucide-react';
+
+const LS_CHAT_KEY = 'bld_ai_chats';
 
 interface SettingsPageProps {
   candidatesCount: number;
@@ -20,6 +22,13 @@ export default function SettingsPage({
   const [modelType, setModelType] = useState('gemini-2.5-pro');
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.85);
   const [useSovereignCloud, setUseSovereignCloud] = useState(true);
+  const [chatCleared, setChatCleared] = useState(false);
+
+  const handleResetChat = () => {
+    localStorage.removeItem(LS_CHAT_KEY);
+    setChatCleared(true);
+    setTimeout(() => setChatCleared(false), 2500);
+  };
 
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
@@ -59,6 +68,7 @@ export default function SettingsPage({
                   <option value="gemini-2.5-flash">Gemini 2.5 Flash (Ultra-Low Latency Streams)</option>
                   <option value="experimental-bld-v4">Experimental Bloodhound Spec v4.2</option>
                 </select>
+                <p className="text-[10px] text-on-surface-variant mt-1">⚠ Model selection is display-only until backend config API is wired.</p>
               </div>
 
               <div>
@@ -83,6 +93,7 @@ export default function SettingsPage({
                   <span>0.85 (Recommended)</span>
                   <span>0.99 (Paranoid)</span>
                 </div>
+                <p className="text-[10px] text-on-surface-variant mt-1">⚠ Threshold is display-only until backend config API is wired.</p>
               </div>
             </div>
           </div>
@@ -110,6 +121,7 @@ export default function SettingsPage({
                   <p className="text-xs text-on-surface-variant leading-relaxed mt-0.5">
                     Locks decrypted client information in local partitions, skipping remote ingestion cloud synchronisers. Essential for GDPR compliance levels.
                   </p>
+                  <p className="text-[10px] text-on-surface-variant mt-1">⚠ Toggle is display-only until backend config API is wired.</p>
                 </div>
               </div>
 
@@ -153,18 +165,19 @@ export default function SettingsPage({
           </div>
 
           <div className="p-6 bg-white border border-border-subtle rounded-md space-y-2 text-xs font-sans">
-            <h4 className="font-bold text-slate-800">Reset AI Chat History?</h4>
+            <h4 className="font-bold text-slate-800">Reset AI Chat History</h4>
             <p className="text-on-surface-variant leading-relaxed">
-              Clears the AI copilot conversation history. All candidate and job data is preserved.
+              Clears the AI copilot conversation history stored in your browser. All candidate and job data is preserved.
             </p>
             <button
-              onClick={() => {
-                localStorage.removeItem('bld_ai_chats');
-                window.location.reload();
-              }}
-              className="mt-3 w-full py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold border border-border-subtle cursor-pointer transition-colors rounded uppercase text-[10px]"
+              onClick={handleResetChat}
+              className={`mt-3 w-full py-2 font-bold border cursor-pointer transition-colors rounded uppercase text-[10px] ${
+                chatCleared
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                  : 'bg-slate-100 hover:bg-slate-200 text-slate-800 border-border-subtle'
+              }`}
             >
-              Reset AI Chat History
+              {chatCleared ? '✓ Chat History Cleared' : 'Reset AI Chat History'}
             </button>
           </div>
         </div>

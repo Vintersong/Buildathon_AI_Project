@@ -111,8 +111,6 @@ def score_structured(candidates: List[str], req: RequirementRecord) -> Dict[str,
     Stage 3b: Structured dimension scores (experience, location, language, freshness).
     Returns a per-candidate dict of dimension -> score (0.0-1.0).
     """
-    from datetime import timezone, timedelta
-
     req_location = (req.requirements.location or "").lower()
     req_languages = {lang.lower() for lang in (req.requirements.language or [])}
 

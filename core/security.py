@@ -133,7 +133,7 @@ def anonymize_candidate_text(text: str) -> AnonymizedResult:
             and not any(char.isdigit() for char in stripped)
         ):
             mapping[name_token] = stripped
-            result = result.replace(stripped, name_token, 1)
+            result = result.replace(stripped, name_token)
             break
 
     return AnonymizedResult(anonymized_text=result, mapping=mapping)

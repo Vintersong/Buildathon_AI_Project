@@ -2,8 +2,7 @@ import json
 import re
 import uuid
 import shutil
-import tempfile
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Any
 
@@ -33,8 +32,10 @@ app = FastAPI(title="Bloodhound Talent Pool Manager")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000",
-                   "http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:5173", "http://127.0.0.1:5173",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -78,7 +79,6 @@ def _map_candidate(record_id: str, rec) -> dict:
 
 
 def _candidate_record_ids() -> list[str]:
-    """Return candidate record IDs from the index plus any record files missing from it."""
     seen: set[str] = set()
     record_ids: list[str] = []
 
@@ -108,7 +108,8 @@ def _map_review_task(case: dict) -> dict:
     reason = case.get("reason", "")
     if "identity" in reason:
         task_type = "IDENTITY_CONFLICT"
-    elif any(k in reason for k in ("pii", "consent", "compliance", "retention", "gdpr")):
+    elif any(k in reason for k in ("pii", "consent", "compliance", "retention", "gdpr",
+                                    "sensitive", "low_extraction", "data_region", "missing")):
         task_type = "COMPLIANCE_FLAG"
     elif "outreach" in reason:
         task_type = "OUTREACH_DRAFT"
@@ -128,7 +129,6 @@ def _map_review_task(case: dict) -> dict:
         "status": status,
     }
 
-    # Attach nested detail objects so the UI can render them
     if task_type == "COMPLIANCE_FLAG":
         rec = load_record(case.get("record_id", ""))
         name = rec.identity.primary_name if rec else case.get("record_id", "")
@@ -143,8 +143,9 @@ def _map_review_task(case: dict) -> dict:
         name = rec.identity.primary_name if rec else case.get("record_id", "")
         task["outreachDetails"] = {
             "targetName": name,
-            "subject": f"Opportunity at Bloodhound for {name}",
-            "draftBody": case.get("draft_body", ""),
+            "subject": f"Opportunity for {name}",
+            # draft_text is the canonical key set by outreach.py
+            "draftBody": case.get("draft_text") or case.get("draft_body", ""),
             "signals": [],
         }
     elif task_type == "IDENTITY_CONFLICT":
@@ -266,7 +267,8 @@ def _map_job(req_id: str, data: dict) -> dict:
     return {
         "id": req_id,
         "title": data.get("title", ""),
-        "department": data.get("description", ""),
+        # support both 'department' (new) and legacy 'description' field
+        "department": data.get("department") or data.get("description", ""),
         "location": reqs.get("location", ""),
         "status": "MATCHING",
         "tags": reqs.get("must_have", [])[:2],
@@ -297,7 +299,8 @@ async def create_job(body: JobCreate):
     record = {
         "id": req_id,
         "title": body.title,
-        "description": body.department,
+        "department": body.department,   # canonical field
+        "description": body.department,  # legacy compat
         "requirements": {
             "must_have": body.must_have,
             "nice_to_have": body.nice_to_have,
@@ -343,9 +346,11 @@ async def run_shortlist(req_id: str):
             "name": name,
             "confidence": item.get("match_score", 0.0),
             "explanation": "; ".join(item.get("evidence", [])),
+            # types.ts expects: 'drafted' | 'pending_review' | 'active'
             "status": "pending_review" if item.get("review_required") else "active",
             "initials": _initials(name),
         })
+    # Return flat list — matches ShortlistCandidate[] expected by api.ts
     return shortlist
 
 
@@ -409,10 +414,7 @@ class _GeminiChatBody(BaseModel):
 
 
 def _extract_job_params(text: str) -> dict:
-    """Heuristic extraction of job creation params from natural language."""
     params: dict = {"title": "", "department": "Engineering", "location": "Remote", "must_have": [], "nice_to_have": []}
-
-    # Title: "for a/an X" or "X role/position/engineer/developer"
     title_m = re.search(
         r"(?:for (?:a|an) )([\w\s]+?)(?:\s+(?:role|position|job|engineer|developer|manager|analyst|designer|at|in|with|,|$))",
         text, re.IGNORECASE
@@ -427,12 +429,10 @@ def _extract_job_params(text: str) -> dict:
         if role_m:
             params["title"] = role_m.group(0).strip().title()
 
-    # Location
     loc_m = re.search(r"(?:in|at|based in|located in)\s+([\w\s,]+?)(?:\s+with|\s+who|\s+and|,|\.|$)", text, re.IGNORECASE)
     if loc_m:
         params["location"] = loc_m.group(1).strip()
 
-    # Must-have skills from known tech list
     known_skills = [
         "Python", "JavaScript", "TypeScript", "Java", "React", "Node.js", "AWS", "Go", "Rust",
         "SQL", "Kubernetes", "Docker", "FastAPI", "Django", "Vue", "Angular", "PostgreSQL",
@@ -440,7 +440,6 @@ def _extract_job_params(text: str) -> dict:
     ]
     found = [s for s in known_skills if re.search(r"\b" + re.escape(s) + r"\b", text, re.IGNORECASE)]
     params["must_have"] = list(dict.fromkeys(found))
-
     return params
 
 
@@ -448,18 +447,13 @@ def _format_jobs_list(jobs: list, query: str = "") -> str:
     if not jobs:
         return "No job requirements are currently active in the system."
     q = query.lower()
-    if q:
-        filtered = [
-            j for j in jobs
-            if q in j.get("title", "").lower()
-            or q in j.get("department", "").lower()
-            or q in j.get("location", "").lower()
-            or any(q in tag.lower() for tag in j.get("tags", []))
-        ]
-        if not filtered:
-            filtered = jobs
-    else:
-        filtered = jobs
+    filtered = [
+        j for j in jobs
+        if not q or q in j.get("title", "").lower()
+        or q in j.get("department", "").lower()
+        or q in j.get("location", "").lower()
+        or any(q in tag.lower() for tag in j.get("tags", []))
+    ] or jobs
     lines = [f"Found **{len(filtered)} job(s)**:\n"]
     for j in filtered[:10]:
         lines.append(f"- **{j.get('title')}** — {j.get('department', '')} • {j.get('location', '')} `{j.get('status', 'MATCHING')}`")
@@ -490,7 +484,7 @@ async def gemini_chat(body: _GeminiChatBody):
 
     response_text = ""
 
-    # --- LLM path: LM Studio (local) takes priority over Gemini ---
+    # Import LM Studio helpers added to extract.py
     from core.extract import _configure_genai, _lm_studio_available, _lm_studio_chat, MODEL_NAME
     use_lm_studio = _lm_studio_available()
     llm_ok = use_lm_studio or _configure_genai()
@@ -524,7 +518,6 @@ async def gemini_chat(body: _GeminiChatBody):
                 resp = chat_session.send_message(last_user_msg)
                 response_text = resp.text
 
-            # Parse any action markers the model emitted
             action_m = re.search(r'\[ACTION:CREATE_JOB\]\s*(\{[^\n]+\})', response_text)
             if action_m:
                 try:
@@ -545,13 +538,11 @@ async def gemini_chat(body: _GeminiChatBody):
         except Exception as exc:
             err = str(exc)
             if any(k in err.lower() for k in ("429", "quota", "rate", "exhausted")):
-                # Gemini quota hit — fall through to rule-based handler below
                 llm_ok = False
                 response_text = ""
             else:
                 response_text = f"Agent error: {exc}"
 
-    # --- Fallback path (no LLM, or LLM quota-exhausted above) ---
     if not response_text:
         if create_intent:
             params = _extract_job_params(last_user_msg)
@@ -571,7 +562,7 @@ async def gemini_chat(body: _GeminiChatBody):
                     f"- **Location**: {params['location']}\n"
                     f"- **Department**: {params['department']}\n"
                     f"- **Required skills**: {skills_str}\n\n"
-                    f"The matching engine will begin scoring candidates automatically."
+                    "The matching engine will begin scoring candidates automatically."
                 )
             else:
                 response_text = (
@@ -579,10 +570,8 @@ async def gemini_chat(body: _GeminiChatBody):
                     "_\"Create a job for a Senior Python Developer in London with FastAPI and Docker\"_\n\n"
                     "Or use the **Create New Job** button in the Job Match Matrix screen."
                 )
-
         elif search_intent:
             response_text = _format_jobs_list(jobs, last_user_msg)
-
         elif any(p in lower_msg for p in ["candidate", "talent", "pool", "how many"]):
             response_text = (
                 f"**Talent Pool Overview**\n\n"
@@ -591,7 +580,6 @@ async def gemini_chat(body: _GeminiChatBody):
                 f"- Pending compliance reviews: **{pending_count}**\n\n"
                 "Use the Candidate Pool screen for detailed filtering."
             )
-
         elif any(p in lower_msg for p in ["compliance", "gdpr", "pending", "review"]):
             pending_tasks = [t for t in review_tasks if t.get("status") == "pending"]
             if pending_tasks:
@@ -601,7 +589,6 @@ async def gemini_chat(body: _GeminiChatBody):
                 response_text = "\n".join(lines)
             else:
                 response_text = "No pending compliance tasks. The candidate pool is fully compliant."
-
         else:
             response_text = (
                 f"I'm the **Bloodhound AI Copilot**. Here's what I can do:\n\n"
@@ -630,7 +617,7 @@ if UI_DIST.exists():
     async def spa_fallback(full_path: str):
         index = UI_DIST / "index.html"
         if not index.exists():
-            raise HTTPException(status_code=404, detail="UI not built yet")
+            raise HTTPException(status_code=404, detail="UI not built yet — run: cd ui && npm run build")
         return FileResponse(str(index))
 
 

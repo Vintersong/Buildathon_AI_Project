@@ -1,0 +1,9 @@
+[
+  {
+    "job_id": "req_ml_eng_001",
+    "expected_top_candidates": [
+      "cand_test_001",
+      "cand_test_002"
+    ]
+  }
+]

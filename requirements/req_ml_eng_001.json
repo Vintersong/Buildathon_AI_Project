@@ -1,0 +1,19 @@
+{
+  "id": "req_ml_eng_001",
+  "title": "Senior Machine Learning Engineer",
+  "description": "Looking for an experienced ML engineer to build scalable AI systems.",
+  "requirements": {
+    "must_have": ["Python", "Machine Learning", "PyTorch", "LLMs"],
+    "nice_to_have": ["FastAPI", "Docker", "Kubernetes"],
+    "location": "Remote",
+    "language": ["English"],
+    "category": "Engineering"
+  },
+  "scoring": {
+    "skills": {"weight": 0.5},
+    "experience": {"weight": 0.3},
+    "location": {"weight": 0.2}
+  },
+  "created_at": "2026-05-23T08:00:00Z",
+  "updated_at": "2026-05-23T08:00:00Z"
+}

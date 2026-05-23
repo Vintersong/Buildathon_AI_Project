@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Shortlist for Job: {{ job_id }}</h2>
+    <a href="/" class="btn btn-outline-secondary">Back</a>
+</div>
+
+{% if report.error %}
+<div class="alert alert-danger">{{ report.error }}</div>
+{% endif %}
+
+<div class="row">
+    {% for match in report.shortlist %}
+    <div class="col-md-12 mb-3">
+        <div class="card {% if match.review_required %}border-warning{% endif %}">
+            <div class="card-header d-flex justify-content-between">
+                <strong>{{ match.candidate_name }}</strong>
+                <span class="badge bg-primary">Score: {{ "%.2f"|format(match.match_score) }}</span>
+            </div>
+            <div class="card-body">
+                <h6>Evidence of Match:</h6>
+                <ul>
+                    {% for ev in match.evidence %}
+                    <li>{{ ev }}</li>
+                    {% endfor %}
+                </ul>
+                
+                {% if match.uncertainty_flags %}
+                <h6 class="text-warning mt-3">Uncertainty Flags:</h6>
+                <ul>
+                    {% for flag in match.uncertainty_flags %}
+                    <li class="text-warning">{{ flag }}</li>
+                    {% endfor %}
+                </ul>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="col-md-12">
+        <p class="text-muted">No candidates found for this shortlist.</p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

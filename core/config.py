@@ -4,6 +4,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
 # Base project directory
 BASE_DIR = Path(__file__).parent.parent
 
@@ -30,6 +45,22 @@ MANIFEST_PATH = INDEXES_DIR / "manifest.json"
 
 # API Keys
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Security/compliance defaults
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+ENABLE_EXTERNAL_LLM = _env_bool("ENABLE_EXTERNAL_LLM", False)
+ENABLE_EXTERNAL_OUTREACH_LLM = _env_bool("ENABLE_EXTERNAL_OUTREACH_LLM", False)
+ENABLE_LOCAL_EMBEDDINGS = _env_bool("ENABLE_LOCAL_EMBEDDINGS", False)
+DEFAULT_RETENTION_DAYS = _env_int("DEFAULT_RETENTION_DAYS", 180)
+DEFAULT_DATA_REGION = os.getenv("DEFAULT_DATA_REGION", "EEA")
+DEFAULT_CONSENT_BASIS = os.getenv("DEFAULT_CONSENT_BASIS")
+TALENT_POOL_ADMIN_TOKEN = os.getenv("TALENT_POOL_ADMIN_TOKEN")
+if not TALENT_POOL_ADMIN_TOKEN and APP_ENV in {"development", "local", "test"}:
+    TALENT_POOL_ADMIN_TOKEN = "dev-token"
+
+# Intake safety limits
+MAX_INGEST_FILE_BYTES = _env_int("MAX_INGEST_FILE_BYTES", 5 * 1024 * 1024)
+MAX_PDF_PAGES = _env_int("MAX_PDF_PAGES", 25)
 
 # Create directories if they don't exist
 def init_directories():

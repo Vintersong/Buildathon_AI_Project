@@ -1,6 +1,5 @@
 import os
 import json
-import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional
 from filelock import FileLock
@@ -8,6 +7,7 @@ from filelock import FileLock
 from .config import RECORDS_DIR, RECORD_INDEX_PATH
 from .events import log_event
 from .schemas import CandidateRecord
+from .security import resolve_child_json
 
 class SecurityError(Exception):
     pass
@@ -17,14 +17,10 @@ class StoreError(Exception):
 
 def _resolve_record_path(record_id: str) -> Path:
     """Resolve and validate a record path to prevent path traversal."""
-    if "/" in record_id or "\\" in record_id or ".." in record_id:
+    try:
+        return resolve_child_json(RECORDS_DIR, record_id, "record ID")
+    except ValueError:
         raise SecurityError("Invalid record ID")
-    
-    path = (RECORDS_DIR / f"{record_id}.json").resolve()
-    if not path.is_relative_to(RECORDS_DIR.resolve()):
-        raise SecurityError("Path traversal attempt detected")
-    
-    return path
 
 def load_record(record_id: str) -> Optional[CandidateRecord]:
     """Load a candidate record by ID."""
@@ -63,6 +59,8 @@ def save_record(record_id: str, record: CandidateRecord, event: Optional[Dict[st
                 # In a purely append-only event-sourcing setup, we'd do this cleaner
                 with open(temp_path, "w", encoding="utf-8") as f:
                     f.write(record.model_dump_json(indent=2))
+                    f.flush()
+                    os.fsync(f.fileno())
                 os.replace(temp_path, path)
                 
                 # Append to global JSONL log

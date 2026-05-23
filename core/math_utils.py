@@ -1,11 +1,17 @@
 import numpy as np
-from sentence_transformers import SentenceTransformer
+
+try:
+    from sentence_transformers import SentenceTransformer
+except ImportError:
+    SentenceTransformer = None
 
 # Load embedding model once per process
 _model = None
 
 def get_embedding_model():
     global _model
+    if SentenceTransformer is None:
+        raise RuntimeError("sentence-transformers is not installed")
     if _model is None:
         _model = SentenceTransformer('all-MiniLM-L6-v2')
     return _model

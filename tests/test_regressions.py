@@ -1,0 +1,356 @@
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from core.schemas import CandidateExtraction, CandidateRecord, Compliance, Identity, Profile, Scores, State, RequirementRecord, RequirementCriteria
+
+
+def make_record(**kwargs):
+    record = CandidateRecord(
+        created_at="2026-05-23T00:00:00Z",
+        updated_at="2026-05-23T00:00:00Z",
+        identity=Identity(primary_name="Ada Lovelace"),
+        profile=Profile(
+            seniority="Senior",
+            years_of_experience=6,
+            technologies_used=["Python"],
+            languages_spoken=["English"],
+            location="Remote",
+        ),
+        state=State(status="new"),
+        compliance=Compliance(consent_basis="candidate_consent", source="document", retention_until="2099-01-01T00:00:00Z"),
+        scores=Scores(extraction_confidence=0.9),
+    )
+    for key, value in kwargs.items():
+        setattr(record, key, value)
+    return record
+
+
+def make_extraction(**overrides):
+    data = {
+        "name": "Ada Lovelace",
+        "emails": ["ada@example.com"],
+        "phones": [],
+        "linkedin_url": None,
+        "seniority": "Senior",
+        "years_of_experience": 6,
+        "study_degrees": ["Master"],
+        "technologies_used": ["Python"],
+        "languages_spoken": ["English"],
+        "location": "Remote",
+        "previous_jobs": ["ML Engineer - Example"],
+        "projects_developed": ["Built ML platform"],
+        "summary": "Senior ML engineer.",
+        "extraction_confidence": 0.9,
+        "review_flags": [],
+    }
+    data.update(overrides)
+    return CandidateExtraction(**data)
+
+
+class FakeResponse:
+    def __init__(self, text):
+        self.text = text
+
+
+class CapturingModel:
+    def __init__(self, response_text):
+        self.response_text = response_text
+        self.prompts = []
+
+    def generate_content(self, prompt, generation_config=None):
+        self.prompts.append(prompt)
+        return FakeResponse(self.response_text)
+
+
+class FakeGenai:
+    class GenerationConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+
+class RegressionTests(unittest.TestCase):
+    def test_quarantine_directories_are_created_and_redacted(self):
+        from core import extract, ingest
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            with patch.object(extract, "QUARANTINE_DIR", tmp_path):
+                extract._quarantine_failed_output("Contact ada@example.com", "Call +40 722 111 222", "json_decode_error")
+                payload = json.loads(next((tmp_path / "schema_failures").glob("*.json")).read_text())
+                self.assertNotIn("ada@example.com", json.dumps(payload))
+                self.assertNotIn("+40 722 111 222", json.dumps(payload))
+
+            with patch.object(ingest, "QUARANTINE_DIR", tmp_path):
+                ingest._quarantine_security(Path("C:/tmp/ada@example.com.pdf"), "path_not_allowed")
+                payload = json.loads(next((tmp_path / "security_rejections").glob("*.json")).read_text())
+                self.assertNotIn("ada@example.com", json.dumps(payload))
+
+    def test_save_record_persists_provenance_and_index(self):
+        from core import store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            records = base / "records"
+            indexes = base / "indexes"
+            records.mkdir()
+            indexes.mkdir()
+            with patch.object(store, "RECORDS_DIR", records), patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"):
+                (indexes / "record_index.json").write_text("{}")
+                record = make_record()
+                event = {"event_id": "evt_test", "event_type": "test", "timestamp": "2026-05-23T00:00:00Z", "source": {}, "actor": {}}
+                store.save_record("cand_test", record, event=event)
+                saved = store.load_record("cand_test")
+                self.assertEqual(saved.provenance[0]["event_id"], "evt_test")
+                index = json.loads((indexes / "record_index.json").read_text())
+                self.assertIn("cand_test", index)
+
+    def test_matching_handles_missing_records_and_missing_scores(self):
+        from core import match
+
+        req = RequirementRecord(
+            id="req_test",
+            title="Senior ML Engineer",
+            requirements=RequirementCriteria(must_have=["Python"], location="Remote", language=["English"]),
+            scoring={"skills": {"weight": 0.5}, "experience": {"weight": 0.3}, "location": {"weight": 0.2}},
+            created_at="2026-05-23T00:00:00Z",
+            updated_at="2026-05-23T00:00:00Z",
+        )
+        record = make_record()
+
+        with patch.object(match, "load_record", side_effect=lambda record_id: record if record_id == "cand_ok" else None):
+            self.assertEqual(set(match.score_keywords(["cand_ok", "missing"], req)), {"cand_ok"})
+
+        with patch.object(match, "_load_requirement", return_value=req), \
+            patch.object(match, "_get_all_active_candidates", return_value=["cand_ok"]), \
+            patch.object(match, "filter_candidates", return_value=["cand_ok"]), \
+            patch.object(match, "score_keywords", return_value={}), \
+            patch.object(match, "score_embeddings", return_value={}), \
+            patch.object(match, "score_structured", return_value={}), \
+            patch.object(match, "load_record", return_value=record):
+            report = match.generate_shortlist("req_test", use_llm_rerank=False)
+            self.assertEqual(report["shortlist"][0]["record_id"], "cand_ok")
+
+    def test_data_region_none_is_not_region_violation(self):
+        from core import compliance
+
+        record = make_record()
+        record.compliance.data_region = None
+        with patch.object(compliance, "load_record", return_value=record), patch.object(compliance, "log_compliance"):
+            reasons = [case["reason"] for case in compliance.evaluate_compliance("cand_test")]
+            self.assertNotIn("data_region_violation", reasons)
+
+        record.compliance.data_region = "US"
+        with patch.object(compliance, "load_record", return_value=record), patch.object(compliance, "log_compliance"):
+            reasons = [case["reason"] for case in compliance.evaluate_compliance("cand_test")]
+            self.assertIn("data_region_violation", reasons)
+
+    def test_bulk_refresh_dedupes_without_reordering(self):
+        from core import maintenance
+
+        record = make_record()
+        record.profile.technologies_used = ["Python", "FastAPI"]
+        record.profile.previous_jobs = ["Engineer - A"]
+        extraction = make_extraction(
+            technologies_used=["FastAPI", "Docker"],
+            previous_jobs=["Engineer - A", "Lead - B"],
+        )
+
+        with patch.object(maintenance, "load_record", return_value=record), \
+            patch.object(maintenance, "save_record"), \
+            patch.object(maintenance, "extract_candidate_data", return_value=(extraction, {"external": False})), \
+            patch.object(maintenance, "evaluate_compliance", return_value=[]), \
+            patch.object(maintenance, "add_to_queue"):
+            maintenance.bulk_refresh([{"record_id": "cand_test", "raw_text": "updated"}])
+            self.assertEqual(record.profile.technologies_used, ["Python", "FastAPI", "Docker"])
+            self.assertEqual(record.profile.previous_jobs, ["Engineer - A", "Lead - B"])
+
+    def test_ingest_does_not_map_headline_to_seniority(self):
+        from core import ingest, store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            intake = base / "intake"
+            records = base / "records"
+            indexes = base / "indexes"
+            intake.mkdir()
+            records.mkdir()
+            indexes.mkdir()
+            source = intake / "cv.txt"
+            source.write_text("Ada Lovelace\nSenior Python Engineer\nada@example.com", encoding="utf-8")
+            manifest = indexes / "manifest.json"
+            manifest.write_text("{}")
+            (indexes / "record_index.json").write_text("{}")
+
+            with patch.object(ingest, "INTAKE_DIR", intake), \
+                patch.object(ingest, "MANIFEST_PATH", manifest), \
+                patch.object(ingest, "DEFAULT_CONSENT_BASIS", "candidate_consent"), \
+                patch.object(store, "RECORDS_DIR", records), \
+                patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"), \
+                patch.object(ingest, "extract_candidate_data", return_value=(make_extraction(), {"external": False})), \
+                patch.object(ingest, "evaluate_compliance", return_value=[]), \
+                patch.object(ingest, "add_to_queue"):
+                record_id = ingest.ingest_file(source)
+                saved = store.load_record(record_id)
+                self.assertIsNone(saved.profile.headline)
+                self.assertEqual(saved.profile.seniority, "Senior")
+
+    def test_heuristic_extraction(self):
+        from core.extract import extract_candidate_data_heuristic
+
+        extraction, model_info = extract_candidate_data_heuristic(
+            "Ada Lovelace\nSenior ML Engineer with 7 years of experience\n"
+            "ada@example.com\nhttps://www.linkedin.com/in/ada\n"
+            "Skills: Python, PyTorch, FastAPI, Docker\nLanguages: English, Romanian\nLocation: Remote"
+        )
+        self.assertEqual(model_info["provider"], "local")
+        self.assertIn("Python", extraction.technologies_used)
+        self.assertIn("English", extraction.languages_spoken)
+        self.assertEqual(extraction.years_of_experience, 7)
+
+    def test_requirement_id_traversal_rejected(self):
+        from core import match
+
+        with self.assertRaises(ValueError):
+            match._load_requirement("../secret")
+
+    def test_base_template_has_no_cdn(self):
+        content = Path("web/templates/base.html").read_text(encoding="utf-8")
+        self.assertNotIn("cdn.jsdelivr.net", content)
+        self.assertNotIn("https://", content)
+
+    def test_web_routes_require_auth(self):
+        from fastapi.testclient import TestClient
+        import web.app as web_app
+
+        with patch.object(web_app, "TALENT_POOL_ADMIN_TOKEN", "test-token"):
+            client = TestClient(web_app.app)
+            self.assertEqual(client.get("/candidates").status_code, 401)
+            self.assertEqual(client.get("/candidates", headers={"x-admin-token": "test-token"}).status_code, 200)
+
+    def test_anonymize_candidate_text_replaces_direct_identifiers(self):
+        from core.security import anonymize_candidate_text
+
+        payload = anonymize_candidate_text(
+            "Ada Lovelace\nEmail: ada@example.com\nPhone: +40 722 111 222\n"
+            "LinkedIn: https://www.linkedin.com/in/ada\nPortfolio: https://ada.dev\n"
+            "Address: 12 Example Street\nFile: C:\\Users\\Ada\\cv.pdf"
+        )
+        anonymized = payload.anonymized_text
+        for forbidden in ["Ada Lovelace", "ada@example.com", "+40 722 111 222", "linkedin.com/in/ada", "https://ada.dev", "C:\\Users\\Ada\\cv.pdf"]:
+            self.assertNotIn(forbidden, anonymized)
+        self.assertIn("CANDIDATE_001", anonymized)
+        self.assertIn("EMAIL_001", anonymized)
+        self.assertIn("PHONE_001", anonymized)
+        self.assertIn("LINKEDIN_001", anonymized)
+
+    def test_external_extraction_sends_anonymized_text_only(self):
+        from core import extract
+
+        model_response = json.dumps({
+            "name": "CANDIDATE_001",
+            "emails": ["EMAIL_001"],
+            "phones": ["PHONE_001"],
+            "linkedin_url": "LINKEDIN_001",
+            "seniority": "Senior",
+            "years_of_experience": 7,
+            "study_degrees": [],
+            "technologies_used": ["Python"],
+            "languages_spoken": ["English"],
+            "location": "Remote",
+            "previous_jobs": [],
+            "projects_developed": [],
+            "summary": "CANDIDATE_001 has Python experience.",
+            "extraction_confidence": 0.8,
+            "review_flags": [],
+        })
+        model = CapturingModel(model_response)
+
+        with patch.object(extract, "ENABLE_EXTERNAL_LLM", True), \
+            patch.object(extract, "GEMINI_API_KEY", "test-key"), \
+            patch.object(extract, "genai", FakeGenai), \
+            patch.object(extract, "get_extraction_model", return_value=model):
+            extraction, model_info = extract.extract_candidate_data(
+                "Ada Lovelace\nada@example.com\n+40 722 111 222\n"
+                "https://www.linkedin.com/in/ada\nSenior Python Engineer with 7 years of experience"
+            )
+
+        prompt = model.prompts[0]
+        for forbidden in ["Ada Lovelace", "ada@example.com", "+40 722 111 222", "linkedin.com/in/ada"]:
+            self.assertNotIn(forbidden, prompt)
+        self.assertIn("CANDIDATE_001", prompt)
+        self.assertEqual(extraction.name, "Ada Lovelace")
+        self.assertEqual(extraction.emails, ["ada@example.com"])
+        self.assertTrue(model_info["anonymized"])
+
+    def test_external_rerank_prompt_is_anonymized(self):
+        from core import match
+
+        record = make_record()
+        record.profile.summary = "Ada Lovelace built private ML systems."
+        record.identity.emails = ["ada@example.com"]
+        req = RequirementRecord(
+            id="req_test",
+            title="Senior ML Engineer",
+            requirements=RequirementCriteria(must_have=["Python"], location="Remote", language=["English"]),
+            created_at="2026-05-23T00:00:00Z",
+            updated_at="2026-05-23T00:00:00Z",
+        )
+        model = CapturingModel(json.dumps({"match_score": 0.9, "evidence": ["Strong Python"], "uncertainty_flags": []}))
+
+        with patch.object(match, "ENABLE_EXTERNAL_LLM", True), \
+            patch.object(match, "GEMINI_API_KEY", "test-key"), \
+            patch.object(match, "genai", FakeGenai), \
+            patch.object(match, "get_rerank_model", return_value=model), \
+            patch.object(match, "_load_requirement", return_value=req), \
+            patch.object(match, "_get_all_active_candidates", return_value=["cand_test"]), \
+            patch.object(match, "filter_candidates", return_value=["cand_test"]), \
+            patch.object(match, "score_keywords", return_value={"cand_test": 1.0}), \
+            patch.object(match, "score_embeddings", return_value={"cand_test": 0.0}), \
+            patch.object(match, "score_structured", return_value={"cand_test": {"experience": 1.0, "location": 1.0, "language": 1.0, "freshness": 1.0}}), \
+            patch.object(match, "load_record", return_value=record):
+            report = match.generate_shortlist("req_test", use_llm_rerank=True)
+
+        prompt = model.prompts[0]
+        self.assertEqual(report["shortlist"][0]["candidate_name"], "Ada Lovelace")
+        self.assertIn("CANDIDATE_001", prompt)
+        self.assertNotIn("Ada Lovelace", prompt)
+        self.assertNotIn("ada@example.com", prompt)
+
+    def test_external_outreach_prompt_is_anonymized_and_rehydrated(self):
+        from core import outreach
+
+        record = make_record()
+        record.profile.summary = "Ada Lovelace built private ML systems."
+        record.identity.emails = ["ada@example.com"]
+        req = RequirementRecord(
+            id="req_test",
+            title="Senior ML Engineer",
+            requirements=RequirementCriteria(must_have=["Python"]),
+            created_at="2026-05-23T00:00:00Z",
+            updated_at="2026-05-23T00:00:00Z",
+        )
+        model = CapturingModel("Hi CANDIDATE_001,\nYour Python background is relevant.")
+        captured_cases = []
+
+        with patch.object(outreach, "ENABLE_EXTERNAL_OUTREACH_LLM", True), \
+            patch.object(outreach, "GEMINI_API_KEY", "test-key"), \
+            patch.object(outreach, "genai", FakeGenai), \
+            patch.object(outreach, "get_draft_model", return_value=model), \
+            patch.object(outreach, "load_record", return_value=record), \
+            patch.object(outreach, "_load_requirement", return_value=req), \
+            patch.object(outreach, "add_to_queue", side_effect=lambda cases: captured_cases.extend(cases)):
+            outreach.generate_draft("cand_test", "req_test")
+
+        prompt = model.prompts[0]
+        self.assertIn("CANDIDATE_001", prompt)
+        self.assertNotIn("Ada Lovelace", prompt)
+        self.assertNotIn("ada@example.com", prompt)
+        self.assertIn("Hi Ada Lovelace", captured_cases[0]["draft_text"])
+        self.assertNotIn("CANDIDATE_001", captured_cases[0]["draft_text"])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,2 +1,10 @@
 _reference
 .env
+__pycache__/
+*.py[cod]
+venv/
+records/
+indexes/
+logs/
+quarantine/
+intake/

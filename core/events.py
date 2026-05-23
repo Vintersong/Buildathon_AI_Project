@@ -1,10 +1,12 @@
 import json
 from typing import Dict, Any
 from .config import EVENTS_LOG_PATH, ERRORS_LOG_PATH, COMPLIANCE_LOG_PATH
+from .security import redact_pii
 
 def append_jsonl(file_path, data: Dict[str, Any]):
+    file_path.parent.mkdir(parents=True, exist_ok=True)
     with open(file_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(data) + "\n")
+        f.write(json.dumps(redact_pii(data)) + "\n")
 
 def log_event(event_data: Dict[str, Any]):
     append_jsonl(EVENTS_LOG_PATH, event_data)

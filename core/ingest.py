@@ -3,16 +3,28 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from filelock import FileLock
 import fitz  # PyMuPDF
 
-from .config import MANIFEST_PATH, QUARANTINE_DIR, INTAKE_DIR
+from .config import (
+    MANIFEST_PATH,
+    QUARANTINE_DIR,
+    INTAKE_DIR,
+    MAX_INGEST_FILE_BYTES,
+    MAX_PDF_PAGES,
+    DEFAULT_RETENTION_DAYS,
+    DEFAULT_DATA_REGION,
+    DEFAULT_CONSENT_BASIS,
+)
 from .schemas import CandidateRecord, Identity, Profile, State, Compliance, Scores
 from .extract import extract_candidate_data
 from .store import load_record, save_record
 from .events import log_error
+from .compliance import evaluate_compliance
+from .review import add_to_queue
+from .security import redact_pii
 
 def compute_sha256(file_path: Path) -> str:
     sha256_hash = hashlib.sha256()
@@ -48,11 +60,17 @@ def update_manifest(file_hash: str, record_id: str):
 
 def extract_text_from_file(file_path: Path) -> str:
     """Extract text from supported file types."""
+    size = file_path.stat().st_size
+    if size > MAX_INGEST_FILE_BYTES:
+        raise ValueError(f"File exceeds maximum allowed size of {MAX_INGEST_FILE_BYTES} bytes")
+
     ext = file_path.suffix.lower()
     if ext == ".pdf":
         text = ""
         try:
             with fitz.open(file_path) as doc:
+                if doc.page_count > MAX_PDF_PAGES:
+                    raise ValueError(f"PDF exceeds maximum allowed page count of {MAX_PDF_PAGES}")
                 for page in doc:
                     text += page.get_text()
             return text
@@ -97,7 +115,7 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
         })
         raise
         
-    # 4. LLM Extraction
+    # 4. Extraction
     extraction, model_info = extract_candidate_data(raw_text)
     
     # 5. Record Creation / Update Projection
@@ -105,6 +123,9 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
     now = datetime.utcnow().isoformat() + "Z"
     
     record = load_record(record_id)
+    review_required = _requires_review(extraction, model_info)
+    retention_until = (datetime.utcnow() + timedelta(days=DEFAULT_RETENTION_DAYS)).isoformat() + "Z"
+
     if not record:
         # Create new
         record = CandidateRecord(
@@ -117,7 +138,7 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
                 linkedin_url=extraction.linkedin_url
             ),
             profile=Profile(
-                headline=extraction.seniority,  # map for now
+                headline=None,
                 summary=extraction.summary,
                 seniority=extraction.seniority,
                 years_of_experience=extraction.years_of_experience,
@@ -131,17 +152,47 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
             scores=Scores(
                 extraction_confidence=extraction.extraction_confidence
             ),
+            state=State(
+                status="pending_review" if review_required or not DEFAULT_CONSENT_BASIS else "new",
+                last_refreshed_at=now,
+            ),
             compliance=Compliance(
-                # Enforce HITL review if low confidence
-                human_review_required=(extraction.extraction_confidence < 0.75)
+                consent_basis=DEFAULT_CONSENT_BASIS,
+                source=source_type,
+                retention_until=retention_until,
+                data_region=DEFAULT_DATA_REGION,
+                human_review_required=(review_required or not DEFAULT_CONSENT_BASIS)
             )
         )
     else:
         # Update existing - logic for merging fields safely
         record.updated_at = now
-        # Simplistic overwrite for the buildathon, in reality we'd append or compare
-        record.profile.technologies_used = list(set(record.profile.technologies_used + extraction.technologies_used))
+        record.state.last_refreshed_at = now
+        _append_unique(record.profile.technologies_used, extraction.technologies_used)
+        _append_unique(record.profile.previous_jobs, extraction.previous_jobs)
+        _append_unique(record.profile.projects_developed, extraction.projects_developed)
+        _append_unique(record.profile.languages_spoken, extraction.languages_spoken)
+        _append_unique(record.profile.study_degrees, extraction.study_degrees)
+        if extraction.summary:
+            record.profile.summary = extraction.summary
+        if extraction.seniority:
+            record.profile.seniority = extraction.seniority
+        if extraction.years_of_experience is not None:
+            record.profile.years_of_experience = extraction.years_of_experience
+        if extraction.location:
+            record.profile.location = extraction.location
         record.scores.extraction_confidence = extraction.extraction_confidence
+        if not record.compliance.source:
+            record.compliance.source = source_type
+        if not record.compliance.retention_until:
+            record.compliance.retention_until = retention_until
+        if not record.compliance.data_region:
+            record.compliance.data_region = DEFAULT_DATA_REGION
+        if not record.compliance.consent_basis and DEFAULT_CONSENT_BASIS:
+            record.compliance.consent_basis = DEFAULT_CONSENT_BASIS
+        if review_required or not record.compliance.consent_basis:
+            record.compliance.human_review_required = True
+            record.state.status = "pending_review"
     
     # 6. Provenance Event
     event = {
@@ -161,12 +212,16 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
         "changes": [{"operation": "replace", "path": "/", "value": "full_extraction"}],
         "review": {
             "required": record.compliance.human_review_required,
-            "reason": "low_extraction_confidence" if record.compliance.human_review_required else None
+            "reason": ",".join(extraction.review_flags) if record.compliance.human_review_required else None
         }
     }
     
     # 7. Save Atomically
     save_record(record_id, record, event=event)
+
+    review_cases = evaluate_compliance(record_id)
+    if review_cases:
+        add_to_queue(review_cases)
     
     # 8. Update manifest
     update_manifest(file_hash, record_id)
@@ -177,12 +232,25 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
 def _quarantine_security(file_path: Path, reason: str):
     quarantine_id = f"sec_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     folder = QUARANTINE_DIR / "security_rejections"
+    folder.mkdir(parents=True, exist_ok=True)
     
     data = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "reason": reason,
-        "attempted_path": str(file_path)
+        "attempted_path": redact_pii(str(file_path))
     }
     
     with open(folder / f"{quarantine_id}.json", "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
+
+def _requires_review(extraction, model_info: Dict[str, Any]) -> bool:
+    return (
+        extraction.extraction_confidence < 0.75
+        or bool(extraction.review_flags)
+        or bool(model_info.get("external"))
+    )
+
+def _append_unique(target: list, incoming: list):
+    for item in incoming or []:
+        if item not in target:
+            target.append(item)

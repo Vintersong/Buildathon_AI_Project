@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2 class="mb-4">Review Queue</h2>
+
+<div class="card">
+    <div class="card-body">
+        <table>
+            <thead>
+                <tr>
+                    <th>Case</th>
+                    <th>Record</th>
+                    <th>Reason</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for case in cases %}
+                <tr>
+                    <td>{{ case.case_id }}</td>
+                    <td>{{ case.record_id }}</td>
+                    <td>{{ case.reason }}</td>
+                    <td><span class="badge bg-secondary">{{ case.status }}</span></td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="4" class="text-muted">No review cases found.</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}

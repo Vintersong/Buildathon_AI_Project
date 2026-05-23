@@ -2,10 +2,10 @@ import uuid
 from datetime import datetime
 from typing import Dict, Any, List
 
-from .config import COMPLIANCE_LOG_PATH
 from .schemas import CandidateRecord
 from .events import log_compliance
 from .store import load_record
+from .review import has_open_cases
 
 def evaluate_compliance(record_id: str) -> List[Dict[str, Any]]:
     """
@@ -27,9 +27,15 @@ def evaluate_compliance(record_id: str) -> List[Dict[str, Any]]:
     # 2. Consent Check
     if not record.compliance.consent_basis:
         review_cases.append(_create_case(record_id, "missing_consent"))
+
+    if not record.compliance.source:
+        review_cases.append(_create_case(record_id, "missing_source"))
+
+    if not record.compliance.retention_until:
+        review_cases.append(_create_case(record_id, "missing_retention"))
         
     # 3. Data Region Check
-    if record.compliance.data_region != "EEA":
+    if record.compliance.data_region and record.compliance.data_region != "EEA":
         review_cases.append(_create_case(record_id, "data_region_violation"))
         
     # 4. Extraction Confidence
@@ -49,6 +55,34 @@ def evaluate_compliance(record_id: str) -> List[Dict[str, Any]]:
         })
         
     return review_cases
+
+def is_retention_expired(record: CandidateRecord) -> bool:
+    if not record.compliance.retention_until:
+        return False
+    retention_date = datetime.fromisoformat(record.compliance.retention_until.replace("Z", "+00:00"))
+    return datetime.now(retention_date.tzinfo) > retention_date
+
+def record_block_reasons(record: CandidateRecord, record_id: str | None = None) -> List[str]:
+    reasons = []
+    if record.state.archived or record.state.status == "archived":
+        reasons.append("archived")
+    if record.state.stale:
+        reasons.append("stale")
+    if record.state.status == "pending_review" or record.compliance.human_review_required:
+        reasons.append("pending_review")
+    if record_id and has_open_cases(record_id):
+        reasons.append("open_review_case")
+    if not record.compliance.consent_basis:
+        reasons.append("missing_consent")
+    if not record.compliance.source:
+        reasons.append("missing_source")
+    if not record.compliance.retention_until:
+        reasons.append("missing_retention")
+    if is_retention_expired(record):
+        reasons.append("retention_expired")
+    if record.compliance.data_region and record.compliance.data_region != "EEA":
+        reasons.append("data_region_violation")
+    return reasons
 
 def _create_case(record_id: str, reason: str) -> Dict[str, Any]:
     return {

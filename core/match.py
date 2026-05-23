@@ -10,6 +10,7 @@ from .schemas import CandidateRecord, RequirementRecord
 from .store import load_record
 from .math_utils import get_embedding, cosine_similarity, calculate_keyword_overlap
 from .security import anonymize_candidate_record, rehydrate_text
+from .compliance import record_block_reasons
 
 ENABLE_EXTERNAL_LLM = os.getenv("ENABLE_EXTERNAL_LLM", "true").lower() == "true"
 
@@ -51,13 +52,19 @@ def _get_all_active_candidates() -> List[str]:
 
 
 def filter_candidates(candidates: List[str], req: RequirementRecord) -> List[str]:
-    """Stage 1: Local structured filter (status, location)."""
+    """Stage 1: Compliance + location filter.
+
+    Uses record_block_reasons() to enforce consent, retention, and other
+    compliance flags — not just archived status — so non-consented candidates
+    are never surfaced in shortlists.
+    """
     passed = []
     req_location = req.requirements.location.lower() if req.requirements.location else None
 
     for c_id in candidates:
         rec = load_record(c_id)
-        if not rec or rec.state.status == "archived":
+        # Full compliance gate: archived, missing consent, retention expired, etc.
+        if not rec or record_block_reasons(rec, c_id):
             continue
         if req_location and rec.profile.location:
             if req_location not in rec.profile.location.lower():

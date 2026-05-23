@@ -8,7 +8,13 @@ from typing import Optional, Dict, Any
 from filelock import FileLock
 import fitz  # PyMuPDF
 
-from .config import MANIFEST_PATH, QUARANTINE_DIR, INTAKE_DIR
+from .config import (
+    MANIFEST_PATH,
+    QUARANTINE_DIR,
+    INTAKE_DIR,
+    MAX_INGEST_FILE_BYTES,
+    MAX_PDF_PAGES,
+)
 from .schemas import CandidateRecord, Identity, Profile, State, Compliance, Scores
 from .extract import extract_candidate_data
 from .store import load_record, save_record
@@ -57,14 +63,28 @@ def update_manifest(file_hash: str, record_id: str):
 
 def extract_text_from_file(file_path: Path) -> str:
     """Extract text from supported file types."""
+    size = file_path.stat().st_size
+    if size > MAX_INGEST_FILE_BYTES:
+        raise ValueError(
+            f"File exceeds maximum allowed size of {MAX_INGEST_FILE_BYTES} bytes "
+            f"(got {size} bytes). Adjust MAX_INGEST_FILE_BYTES env var to raise the limit."
+        )
+
     ext = file_path.suffix.lower()
     if ext == ".pdf":
         text = ""
         try:
             with fitz.open(file_path) as doc:
+                if doc.page_count > MAX_PDF_PAGES:
+                    raise ValueError(
+                        f"PDF has {doc.page_count} pages which exceeds the "
+                        f"maximum of {MAX_PDF_PAGES}. Adjust MAX_PDF_PAGES env var to raise the limit."
+                    )
                 for page in doc:
                     text += page.get_text()
             return text
+        except ValueError:
+            raise
         except Exception as e:
             raise ValueError(f"PDF parsing failed: {str(e)}")
     elif ext == ".txt":
@@ -93,7 +113,7 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
         print(f"Skipping {file_path.name}: already ingested (hash match) into {existing_by_hash}")
         return existing_by_hash
 
-    # 3. Extract Text
+    # 3. Extract Text (size + page limits enforced inside)
     try:
         raw_text = extract_text_from_file(file_path)
     except Exception as e:

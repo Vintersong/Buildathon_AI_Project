@@ -25,6 +25,16 @@ from .dedup import find_existing_by_identity
 # Override via DEFAULT_CONSENT_BASIS env var or by patching in tests.
 DEFAULT_CONSENT_BASIS: Optional[str] = os.getenv("DEFAULT_CONSENT_BASIS")
 
+# OCR support — optional, gracefully degraded if tesseract is not installed
+try:
+    import pytesseract
+    from PIL import Image
+    _OCR_AVAILABLE = True
+except ImportError:
+    _OCR_AVAILABLE = False
+
+_OCR_MIN_CHARS_PER_PAGE = 50  # pages with fewer chars are treated as image-based
+
 
 def compute_sha256(file_path: Path) -> str:
     sha256_hash = hashlib.sha256()
@@ -61,8 +71,15 @@ def update_manifest(file_hash: str, record_id: str):
             json.dump(manifest, f, indent=2)
 
 
+def _ocr_page(page) -> str:
+    """Render a PDF page to an image and run Tesseract OCR on it."""
+    pix = page.get_pixmap(dpi=200)
+    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    return pytesseract.image_to_string(img)
+
+
 def extract_text_from_file(file_path: Path) -> str:
-    """Extract text from supported file types."""
+    """Extract text from supported file types, with OCR fallback for image-based PDFs."""
     size = file_path.stat().st_size
     if size > MAX_INGEST_FILE_BYTES:
         raise ValueError(
@@ -72,7 +89,8 @@ def extract_text_from_file(file_path: Path) -> str:
 
     ext = file_path.suffix.lower()
     if ext == ".pdf":
-        text = ""
+        full_text = ""
+        ocr_used = False
         try:
             with fitz.open(file_path) as doc:
                 if doc.page_count > MAX_PDF_PAGES:
@@ -81,8 +99,17 @@ def extract_text_from_file(file_path: Path) -> str:
                         f"maximum of {MAX_PDF_PAGES}. Adjust MAX_PDF_PAGES env var to raise the limit."
                     )
                 for page in doc:
-                    text += page.get_text()
-            return text
+                    page_text = page.get_text()
+                    if len(page_text.strip()) < _OCR_MIN_CHARS_PER_PAGE:
+                        # Image-based page — fall back to OCR if available
+                        if _OCR_AVAILABLE:
+                            page_text = _ocr_page(page)
+                            ocr_used = True
+                        # else: keep whatever sparse text was extracted
+                    full_text += page_text
+            if ocr_used:
+                print(f"[ingest] OCR fallback used for {file_path.name}")
+            return full_text
         except ValueError:
             raise
         except Exception as e:

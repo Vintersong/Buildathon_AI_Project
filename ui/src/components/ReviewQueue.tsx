@@ -158,7 +158,7 @@ export default function ReviewQueue({
                 {isHighlighted && (
                   <div className="bg-primary text-white text-[10px] font-mono py-1.5 px-6 uppercase tracking-wider font-semibold flex items-center justify-between">
                     <span>⚡ Highlighted Context Triggered from Core Match Matrix</span>
-                    <button onClick={onClearFocus} className="underline hover:text-amber-300">Clear Focus Focus</button>
+                    <button onClick={onClearFocus} className="underline hover:text-amber-300">Clear Focus</button>
                   </div>
                 )}
 

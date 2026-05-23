@@ -200,17 +200,7 @@ app.post("/api/gemini/parse-cv", async (req, res) => {
     }
 
     if (!ai) {
-      // Mock/Fallback parser if Gemini is not set up
-      res.json({
-        fallback: true,
-        candidate: {
-          name: "John Doe (Demo)",
-          seniority: "Senior Software Engineer",
-          topSkills: ["JAVASCRIPT", "TYPESCRIPT", "REACT", "NODE.JS"],
-          matchScore: 0.85,
-          complianceStatus: "PENDING REVIEW"
-        }
-      });
+      res.status(503).json({ error: "CV parsing unavailable: GEMINI_API_KEY is not configured." });
       return;
     }
 

@@ -1,9 +1,13 @@
 import json
+import logging
 import re
+import warnings
 from typing import Dict, Any, Tuple
 from pydantic import ValidationError
 from datetime import datetime
 import uuid
+
+logger = logging.getLogger(__name__)
 
 try:
     import google.generativeai as genai
@@ -18,9 +22,8 @@ from .security import anonymize_candidate_text, redact_pii
 if genai and GEMINI_API_KEY and ENABLE_EXTERNAL_LLM:
     genai.configure(api_key=GEMINI_API_KEY)
 elif ENABLE_EXTERNAL_LLM:
-    print("Warning: GEMINI_API_KEY not found in environment.")
+    warnings.warn("GEMINI_API_KEY not found in environment — LLM extraction disabled.")
 
-# We use gemini-3.5-flash for fast and cost-effective structured extraction
 MODEL_NAME = "gemini-3.5-flash"
 
 TECHNOLOGIES = [

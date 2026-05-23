@@ -1,3 +1,4 @@
+import logging
 import os
 import hashlib
 import json
@@ -6,6 +7,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from filelock import FileLock
+
+logger = logging.getLogger(__name__)
 import fitz  # PyMuPDF
 
 from .config import (
@@ -98,7 +101,7 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
     existing_record_id = check_manifest(file_hash)
     
     if existing_record_id and not force:
-        print(f"Skipping {file_path.name}: already ingested into {existing_record_id}")
+        logger.info("Skipping %s: already ingested into %s", file_path.name, existing_record_id)
         return existing_record_id
         
     # 3. Extract Text
@@ -226,7 +229,7 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
     # 8. Update manifest
     update_manifest(file_hash, record_id)
     
-    print(f"Successfully ingested {file_path.name} into {record_id}")
+    logger.info("Successfully ingested %s into %s", file_path.name, record_id)
     return record_id
 
 def _quarantine_security(file_path: Path, reason: str):

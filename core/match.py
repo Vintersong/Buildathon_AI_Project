@@ -1,6 +1,9 @@
 import json
+import logging
 from typing import List, Dict, Any
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 try:
     import google.generativeai as genai
@@ -196,7 +199,7 @@ def generate_shortlist(req_id: str, top_n: int = 5, use_llm_rerank: bool = True)
                 uncertainty_flags = _safe_list(eval_data.get("uncertainty_flags"))
                 review_required = bool(uncertainty_flags)
             except Exception as e:
-                print(f"LLM rerank failed for {c_id}: {e}")
+                logger.warning("LLM rerank failed for %s: %s", c_id, e)
 
         shortlist.append({
             "record_id": c_id,

@@ -344,12 +344,7 @@ export default function AuditLogs({ events, searchQuery }: AuditLogsProps) {
 
         {/* Physical Infrastructure graphic thumbnail visual */}
         <div className="relative min-h-[300px] rounded-lg overflow-hidden border border-border-subtle group font-sans">
-          <img
-            alt="Physical server room hardware"
-            src="https://lh3.googleusercontent.com/aida-public/AB6AXuA2RKsSVggrXTAQayGZ_biKV1H8rqd1VxiPPIJ6YBzvVlPj2USluVrI-jaGfAakdShUlN1gpG94mecQHuYYs9ILd2N5L-SFiAsRX0lU5W0G1U97sLS7JAIEfKn0h_Sr6B0OuXRGoczHs01ECoKLIQQ7U4PlWS7lkAu1K9k31bIM21z4HMsnsa7nyvtXXEiUkZ4jpWMvwMUYznOGj6VtSvWFnPHu3fHE2FvW0OSD3RWc22VS0xTa-JPkSyu4_W-sAq491SD1hXbYGg"
-            className="absolute inset-0 w-full h-full object-cover grayscale brightness-[0.70] group-hover:scale-102 transition-transform duration-500"
-            referrerPolicy="no-referrer"
-          />
+          <div className="absolute inset-0 bg-[repeating-linear-gradient(0deg,transparent,transparent_2px,rgba(99,102,241,0.04)_2px,rgba(99,102,241,0.04)_4px)] bg-slate-900" />
           <div className="absolute inset-0 bg-gradient-to-t from-primary via-primary/40 to-transparent flex flex-col justify-end p-8 text-white">
             <div className="text-[10px] font-mono tracking-widest text-slate-300 font-bold uppercase mb-2">PHYSICAL INFRASTRUCTURE</div>
             <h4 className="font-sans font-bold text-base">Deterministic Hardware Anchors</h4>

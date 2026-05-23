@@ -18,7 +18,6 @@ import { Candidate, AuditEvent, JobRequirement, ReviewTask } from './types';
 import * as api from './api';
 
 // ── Dismissed shortlist persistence ─────────────────────────────────────────
-// Shape: { [jobId]: string[] }  — candidate IDs dismissed for that job
 const LS_DISMISSED_KEY = 'bld_dismissed_shortlist';
 
 function loadDismissed(): Record<string, string[]> {
@@ -44,7 +43,6 @@ export default function App() {
   const [reviewTasks, setReviewTasks] = useState<ReviewTask[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
 
-  // dismissed[jobId] = Set of candidate IDs hidden by the user
   const [dismissed, setDismissed] = useState<Record<string, string[]>>(loadDismissed);
 
   const [isSynced, setIsSynced] = useState(true);
@@ -85,7 +83,6 @@ export default function App() {
     refreshAll();
   }, [refreshAll]);
 
-  // Apply dismissed filter to jobs before passing down
   const jobsWithDismissalApplied = jobs.map((job) => {
     const dismissedIds = new Set(dismissed[job.id] || []);
     if (dismissedIds.size === 0) return job;
@@ -159,10 +156,32 @@ export default function App() {
     }
   };
 
-  // 4. Direct compliance status override (optimistic UI)
-  const handleResolveCandidateDirectly = (id: string, newStatus: Candidate['complianceStatus']) => {
-    setCandidates((prev) => prev.map((c) => (c.id === id ? { ...c, complianceStatus: newStatus } : c)));
-    triggerToast('Direct status override completed for Candidate record.');
+  // 4. Direct compliance override — persisted to disk via PATCH /api/candidates/{id}/status
+  const handleResolveCandidateDirectly = async (
+    id: string,
+    newStatus: Candidate['complianceStatus']
+  ) => {
+    // Optimistic update first for instant UI feedback
+    setCandidates((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, complianceStatus: newStatus } : c))
+    );
+    try {
+      const updated = await api.patchCandidateStatus(id, newStatus);
+      // Replace with server-confirmed record so UI reflects ground truth
+      setCandidates((prev) =>
+        prev.map((c) => (c.id === updated.id ? updated : c))
+      );
+      triggerToast(`Compliance status updated to ${newStatus} and saved.`);
+    } catch (e: unknown) {
+      // Roll back optimistic update on failure
+      const msg = e instanceof Error ? e.message : String(e);
+      setCandidates((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, complianceStatus: c.complianceStatus } : c))
+      );
+      triggerToast(`Status override failed: ${msg}`, 'error');
+      // Re-fetch to ensure UI is consistent with disk
+      api.fetchCandidates().then(setCandidates).catch(() => null);
+    }
   };
 
   // 5. Dismiss low matches — persisted to localStorage per job

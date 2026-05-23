@@ -21,6 +21,17 @@ export function ingestCandidate(file: File): Promise<Candidate> {
   return request<Candidate>(`${BASE}/candidates/ingest`, { method: 'POST', body: form });
 }
 
+export function patchCandidateStatus(
+  id: string,
+  complianceStatus: Candidate['complianceStatus']
+): Promise<Candidate> {
+  return request<Candidate>(`${BASE}/candidates/${id}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ complianceStatus }),
+  });
+}
+
 export function fetchJobs(): Promise<JobRequirement[]> {
   return request<JobRequirement[]>(`${BASE}/jobs`);
 }

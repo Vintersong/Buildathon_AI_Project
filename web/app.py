@@ -16,7 +16,7 @@ import sys
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
-from core.store import load_record
+from core.store import load_record, save_record
 from core.match import generate_shortlist
 from core.config import (
     RECORDS_DIR,
@@ -144,7 +144,6 @@ def _map_review_task(case: dict) -> dict:
         task["outreachDetails"] = {
             "targetName": name,
             "subject": f"Opportunity for {name}",
-            # draft_text is the canonical key set by outreach.py
             "draftBody": case.get("draft_text") or case.get("draft_body", ""),
             "signals": [],
         }
@@ -248,6 +247,49 @@ async def ingest_candidate(file: UploadFile = File(...)):
     return _map_candidate(record_id, rec)
 
 
+class StatusPatch(BaseModel):
+    # Accepts the UI-facing complianceStatus string and maps it to record fields
+    complianceStatus: str  # "COMPLIANT" | "PENDING REVIEW" | "EXPIRING (14D)"
+
+
+@app.patch("/api/candidates/{record_id}/status")
+async def patch_candidate_status(record_id: str, body: StatusPatch):
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
+
+    status = body.complianceStatus.upper().strip()
+
+    if status == "COMPLIANT":
+        rec.compliance.human_review_required = False
+    elif status == "PENDING REVIEW":
+        rec.compliance.human_review_required = True
+    elif status in ("EXPIRING (14D)", "EXPIRING"):
+        # Leave human_review_required as-is; just acknowledge the status
+        pass
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown complianceStatus: '{body.complianceStatus}'")
+
+    rec.updated_at = datetime.utcnow().isoformat() + "Z"
+
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "compliance_status_override",
+        "timestamp": rec.updated_at,
+        "actor": {"type": "human"},
+        "source": {"record_id": record_id},
+        "changes": [{"field": "complianceStatus", "new_value": status}],
+        "confidence": 1.0,
+    }
+
+    try:
+        save_record(record_id, rec, event=event)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist record: {str(e)}")
+
+    return _map_candidate(record_id, rec)
+
+
 # ---------------------------------------------------------------------------
 # Job requirement endpoints
 # ---------------------------------------------------------------------------
@@ -267,7 +309,6 @@ def _map_job(req_id: str, data: dict) -> dict:
     return {
         "id": req_id,
         "title": data.get("title", ""),
-        # support both 'department' (new) and legacy 'description' field
         "department": data.get("department") or data.get("description", ""),
         "location": reqs.get("location", ""),
         "status": "MATCHING",
@@ -299,8 +340,8 @@ async def create_job(body: JobCreate):
     record = {
         "id": req_id,
         "title": body.title,
-        "department": body.department,   # canonical field
-        "description": body.department,  # legacy compat
+        "department": body.department,
+        "description": body.department,
         "requirements": {
             "must_have": body.must_have,
             "nice_to_have": body.nice_to_have,
@@ -346,11 +387,9 @@ async def run_shortlist(req_id: str):
             "name": name,
             "confidence": item.get("match_score", 0.0),
             "explanation": "; ".join(item.get("evidence", [])),
-            # types.ts expects: 'drafted' | 'pending_review' | 'active'
             "status": "pending_review" if item.get("review_required") else "active",
             "initials": _initials(name),
         })
-    # Return flat list — matches ShortlistCandidate[] expected by api.ts
     return shortlist
 
 
@@ -484,7 +523,6 @@ async def gemini_chat(body: _GeminiChatBody):
 
     response_text = ""
 
-    # Import LM Studio helpers added to extract.py
     from core.extract import _configure_genai, _lm_studio_available, _lm_studio_chat, MODEL_NAME
     use_lm_studio = _lm_studio_available()
     llm_ok = use_lm_studio or _configure_genai()

@@ -68,3 +68,21 @@ export function resolveTask(caseId: string, resolution: string): Promise<void> {
 export function fetchAuditEvents(): Promise<AuditEvent[]> {
   return request<AuditEvent[]>(`${BASE}/audit`);
 }
+
+export interface AppConfig {
+  model: string;
+  confidence_threshold: number;
+  sovereign_cloud: boolean;
+}
+
+export function fetchConfig(): Promise<AppConfig> {
+  return request<AppConfig>(`${BASE}/config`);
+}
+
+export function saveConfig(cfg: AppConfig): Promise<AppConfig> {
+  return request<AppConfig>(`${BASE}/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(cfg),
+  });
+}

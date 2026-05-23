@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Candidate, CandidateDetail, AuditEvent, ReviewTask } from '../types';
 import * as api from '../api';
+import ReingestPopover from './ReingestPopover';
 
 interface CandidatePoolProps {
   candidates: Candidate[];
@@ -20,6 +21,7 @@ interface CandidatePoolProps {
   onOpenReviewTask: (taskId: string) => void;
   onResolveCandidateDirectly: (id: string, newStatus: Candidate['complianceStatus']) => void;
   onBulkRefresh?: (ids: string[]) => Promise<void>;
+  onCandidateUpdated?: (updated: Candidate) => void;
   recentLogs: AuditEvent[];
   reviewTasks: ReviewTask[];
 }
@@ -174,6 +176,7 @@ export default function CandidatePool({
   onOpenReviewTask,
   onResolveCandidateDirectly,
   onBulkRefresh,
+  onCandidateUpdated,
   recentLogs,
   reviewTasks,
 }: CandidatePoolProps) {
@@ -188,12 +191,14 @@ export default function CandidatePool({
   const [openActionCandidateId, setOpenActionCandidateId] = useState<string | null>(null);
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
 
-  // Bulk selection state
+  // Bulk selection
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkRefreshing, setBulkRefreshing] = useState(false);
   const [bulkRefreshDone, setBulkRefreshDone] = useState(false);
 
-  // Outside-click ref for action menu
+  // Re-ingest popover: stores { id, name, linkedinUrl } of the candidate being re-ingested
+  const [reingestTarget, setReingestTarget] = useState<{ id: string; name: string; linkedinUrl?: string | null } | null>(null);
+
   const actionMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!openActionCandidateId) return;
@@ -262,7 +267,7 @@ export default function CandidatePool({
 
   useEffect(() => {
     setCurrentPage(1);
-    setSelectedIds(new Set()); // clear selection when filters change
+    setSelectedIds(new Set());
   }, [searchQuery, localSearch, activeFilter, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, sortBy]);
 
   const handleClearAllFilters = () => {
@@ -278,7 +283,6 @@ export default function CandidatePool({
   const totalPages = Math.max(1, Math.ceil(filteredCandidates.length / PAGE_SIZE));
   const pagedCandidates = filteredCandidates.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
 
-  // ─── Selection helpers ────────────────────────────────────────────────────
   const pageIds = pagedCandidates.map((c) => c.id);
   const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id));
   const somePageSelected = pageIds.some((id) => selectedIds.has(id));
@@ -286,11 +290,8 @@ export default function CandidatePool({
   const toggleSelectAll = () => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (allPageSelected) {
-        pageIds.forEach((id) => next.delete(id));
-      } else {
-        pageIds.forEach((id) => next.add(id));
-      }
+      if (allPageSelected) { pageIds.forEach((id) => next.delete(id)); }
+      else { pageIds.forEach((id) => next.add(id)); }
       return next;
     });
   };
@@ -311,7 +312,6 @@ export default function CandidatePool({
       if (onBulkRefresh) {
         await onBulkRefresh(Array.from(selectedIds));
       } else {
-        // Stub: simulate a refresh call
         await fetch('/api/candidates/bulk-refresh', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -319,10 +319,7 @@ export default function CandidatePool({
         });
       }
       setBulkRefreshDone(true);
-      setTimeout(() => {
-        setSelectedIds(new Set());
-        setBulkRefreshDone(false);
-      }, 1800);
+      setTimeout(() => { setSelectedIds(new Set()); setBulkRefreshDone(false); }, 1800);
     } finally {
       setBulkRefreshing(false);
     }
@@ -331,6 +328,15 @@ export default function CandidatePool({
   const handleStatusOverride = (candidateId: string, status: Candidate['complianceStatus']) => {
     onResolveCandidateDirectly(candidateId, status);
     setOpenActionCandidateId(null);
+  };
+
+  const handleOpenReingest = (candidate: Candidate) => {
+    setOpenActionCandidateId(null);
+    setReingestTarget({
+      id: candidate.id,
+      name: candidate.name,
+      linkedinUrl: (candidate as Candidate & { linkedinUrl?: string }).linkedinUrl ?? null,
+    });
   };
 
   const totals = useMemo(() => ({
@@ -347,7 +353,21 @@ export default function CandidatePool({
         <CandidateDetailDrawer candidateId={drawerCandidateId} onClose={() => setDrawerCandidateId(null)} />
       )}
 
-      {/* Metric Cards Banner */}
+      {/* Re-ingest Popover */}
+      {reingestTarget && (
+        <ReingestPopover
+          candidateId={reingestTarget.id}
+          candidateName={reingestTarget.name}
+          linkedinUrl={reingestTarget.linkedinUrl}
+          onClose={() => setReingestTarget(null)}
+          onSuccess={(updated) => {
+            setReingestTarget(null);
+            if (onCandidateUpdated) onCandidateUpdated(updated);
+          }}
+        />
+      )}
+
+      {/* Metric Cards */}
       <section className="grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="p-6 bg-white border border-border-subtle rounded flex flex-col justify-between">
           <div className="text-xs font-bold font-sans uppercase tracking-wider text-on-surface-variant mb-2">TOTAL CANDIDATES</div>
@@ -381,7 +401,7 @@ export default function CandidatePool({
         </div>
       </section>
 
-      {/* Search & Advanced Filters Panel */}
+      {/* Filters */}
       <section id="candidate-filters-panel" className="bg-white border border-border-subtle rounded p-5 space-y-4">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-center">
           <div className="lg:col-span-8 relative">
@@ -397,7 +417,7 @@ export default function CandidatePool({
               />
               {localSearch && (
                 <button id="clear-local-search-btn" onClick={() => setLocalSearch('')}
-                  className="p-1 hover:bg-surface-container rounded-full text-on-surface-variant cursor-pointer transition-colors" title="Clear search">
+                  className="p-1 hover:bg-surface-container rounded-full text-on-surface-variant cursor-pointer transition-colors">
                   <X className="w-3.5 h-3.5" />
                 </button>
               )}
@@ -488,15 +508,12 @@ export default function CandidatePool({
         </div>
       </section>
 
-      {/* Main Candidate Table */}
+      {/* Main Table */}
       <section className="bg-white border border-border-subtle rounded overflow-hidden">
 
-        {/* ── Bulk Action Toolbar (visible when rows selected) ── */}
         {selectedIds.size > 0 && (
-          <div
-            id="bulk-action-toolbar"
-            className="flex items-center justify-between px-6 py-3 bg-slate-deep text-white border-b border-white/10 animate-in slide-in-from-top duration-200"
-          >
+          <div id="bulk-action-toolbar"
+            className="flex items-center justify-between px-6 py-3 bg-slate-deep text-white border-b border-white/10 animate-in slide-in-from-top duration-200">
             <div className="flex items-center gap-3">
               <CheckSquare className="w-4 h-4 text-amber-400 shrink-0" />
               <span className="text-xs font-bold font-mono uppercase tracking-wider">
@@ -504,26 +521,14 @@ export default function CandidatePool({
               </span>
             </div>
             <div className="flex items-center gap-3">
-              <button
-                id="bulk-refresh-btn"
-                onClick={handleBulkRefresh}
-                disabled={bulkRefreshing}
-                className="flex items-center gap-1.5 px-4 py-1.5 bg-white text-slate-deep rounded text-xs font-bold hover:bg-slate-100 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
-              >
-                {bulkRefreshing ? (
-                  <><Loader2 className="w-3.5 h-3.5 animate-spin" />Refreshing…</>
-                ) : bulkRefreshDone ? (
-                  <><CheckCircle className="w-3.5 h-3.5 text-status-ok" />Done!</>
-                ) : (
-                  <><RefreshCw className="w-3.5 h-3.5" />Bulk Refresh LinkedIn</>
-                )}
+              <button id="bulk-refresh-btn" onClick={handleBulkRefresh} disabled={bulkRefreshing}
+                className="flex items-center gap-1.5 px-4 py-1.5 bg-white text-slate-deep rounded text-xs font-bold hover:bg-slate-100 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed">
+                {bulkRefreshing ? <><Loader2 className="w-3.5 h-3.5 animate-spin" />Refreshing…</>
+                  : bulkRefreshDone ? <><CheckCircle className="w-3.5 h-3.5 text-status-ok" />Done!</>
+                  : <><RefreshCw className="w-3.5 h-3.5" />Bulk Refresh LinkedIn</>}
               </button>
-              <button
-                onClick={() => setSelectedIds(new Set())}
-                className="text-white/70 hover:text-white text-[11px] font-mono underline cursor-pointer transition-colors"
-              >
-                Deselect all
-              </button>
+              <button onClick={() => setSelectedIds(new Set())}
+                className="text-white/70 hover:text-white text-[11px] font-mono underline cursor-pointer transition-colors">Deselect all</button>
             </div>
           </div>
         )}
@@ -532,17 +537,11 @@ export default function CandidatePool({
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-surface-container border-b border-border-subtle">
-                {/* Select-all checkbox */}
                 <th className="pl-4 pr-2 py-3 w-10" onClick={(e) => e.stopPropagation()}>
-                  <input
-                    id="select-all-checkbox"
-                    type="checkbox"
-                    checked={allPageSelected}
+                  <input id="select-all-checkbox" type="checkbox" checked={allPageSelected}
                     ref={(el) => { if (el) el.indeterminate = somePageSelected && !allPageSelected; }}
                     onChange={toggleSelectAll}
-                    className="w-3.5 h-3.5 cursor-pointer accent-slate-deep"
-                    aria-label="Select all on this page"
-                  />
+                    className="w-3.5 h-3.5 cursor-pointer accent-slate-deep" aria-label="Select all on this page" />
                 </th>
                 <th className="px-4 py-3 font-sans font-bold text-xs text-on-surface-variant tracking-wider">NAME</th>
                 <th className="px-6 py-3 font-sans font-bold text-xs text-on-surface-variant tracking-wider">SENIORITY</th>
@@ -554,11 +553,9 @@ export default function CandidatePool({
             </thead>
             <tbody className="divide-y divide-border-subtle select-none">
               {filteredCandidates.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="text-center py-12 text-sm text-on-surface-variant font-sans">
-                    No candidates match the specified criteria. Try removing filters or changing your search terms.
-                  </td>
-                </tr>
+                <tr><td colSpan={7} className="text-center py-12 text-sm text-on-surface-variant font-sans">
+                  No candidates match the specified criteria. Try removing filters or changing your search terms.
+                </td></tr>
               ) : (
                 pagedCandidates.map((candidate) => {
                   const isReviewState = candidate.complianceStatus === 'PENDING REVIEW';
@@ -568,30 +565,20 @@ export default function CandidatePool({
                     <tr key={candidate.id}
                       onClick={() => handleOpenDrawer(candidate.id)}
                       className={`transition-all h-[56px] group cursor-pointer ${
-                        isSelected
-                          ? 'bg-indigo-50 border-l-4 border-l-indigo-400'
-                          : isReviewState
-                          ? 'bg-status-review/5 border-l-4 border-l-status-review hover:bg-status-review/10'
-                          : 'hover:bg-slate-50'
+                        isSelected ? 'bg-indigo-50 border-l-4 border-l-indigo-400'
+                        : isReviewState ? 'bg-status-review/5 border-l-4 border-l-status-review hover:bg-status-review/10'
+                        : 'hover:bg-slate-50'
                       }`}>
-
-                      {/* Row checkbox */}
                       <td className="pl-4 pr-2 py-3 w-10" onClick={(e) => { e.stopPropagation(); toggleSelectOne(candidate.id); }}>
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
+                        <input type="checkbox" checked={isSelected}
                           onChange={() => toggleSelectOne(candidate.id)}
                           onClick={(e) => e.stopPropagation()}
                           className="w-3.5 h-3.5 cursor-pointer accent-slate-deep"
-                          aria-label={`Select ${candidate.name}`}
-                        />
+                          aria-label={`Select ${candidate.name}`} />
                       </td>
-
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-surface-dim flex items-center justify-center font-bold text-xs text-primary shrink-0">
-                            {candidate.imageInitials}
-                          </div>
+                          <div className="w-8 h-8 rounded-full bg-surface-dim flex items-center justify-center font-bold text-xs text-primary shrink-0">{candidate.imageInitials}</div>
                           <div>
                             <div className="font-sans font-bold text-sm text-primary group-hover:underline">{candidate.name}</div>
                             <div className="font-mono text-[11px] text-on-surface-variant">ID: {candidate.id}</div>
@@ -666,6 +653,14 @@ export default function CandidatePool({
                               <div className="absolute right-0 top-8 z-20 w-52 bg-white border border-border-subtle rounded-md shadow-lg py-1 font-sans">
                                 <button type="button" onClick={() => handleOpenDrawer(candidate.id)}
                                   className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer font-semibold">View full profile</button>
+                                {/* M2c: Update profile via re-ingest */}
+                                <button type="button"
+                                  onClick={() => handleOpenReingest(candidate)}
+                                  className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer flex items-center gap-2">
+                                  <RefreshCw className="w-3 h-3 text-indigo-500 shrink-0" />
+                                  Update profile
+                                </button>
+                                <div className="border-t border-border-subtle my-1" />
                                 <button type="button" onClick={() => handleStatusOverride(candidate.id, 'COMPLIANT')}
                                   className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer">Mark compliant</button>
                                 <button type="button" onClick={() => handleStatusOverride(candidate.id, 'PENDING REVIEW')}
@@ -687,7 +682,6 @@ export default function CandidatePool({
           </table>
         </div>
 
-        {/* Pagination */}
         <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-between font-sans">
           <span className="text-sm text-on-surface-variant">
             Showing {filteredCandidates.length === 0 ? 0 : Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredCandidates.length)}–{Math.min(currentPage * PAGE_SIZE, filteredCandidates.length)} of {filteredCandidates.length} candidates
@@ -701,7 +695,7 @@ export default function CandidatePool({
         </div>
       </section>
 
-      {/* Bento Bottom Row */}
+      {/* Bento Bottom */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-6 pb-12">
         <div className="md:col-span-2 p-8 border border-border-subtle bg-slate-deep text-white relative overflow-hidden rounded-md flex flex-col justify-between min-h-[290px]">
           <div className="relative z-10 space-y-3">

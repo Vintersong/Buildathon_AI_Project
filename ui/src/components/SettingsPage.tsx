@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect } from 'react';
-import { Settings, Shield, Cpu, HelpCircle, HardDrive, Loader2 } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Shield, Cpu, HelpCircle, HardDrive, Loader2, Save, CheckCircle, AlertTriangle } from 'lucide-react';
 import * as api from '../api';
 import type { AppConfig } from '../api';
 
@@ -16,23 +16,62 @@ interface SettingsPageProps {
   tasksCount: number;
 }
 
+type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+
 export default function SettingsPage({
   candidatesCount,
   jobsCount,
   tasksCount,
 }: SettingsPageProps) {
   const [config, setConfig] = useState<AppConfig | null>(null);
+  const [savedConfig, setSavedConfig] = useState<AppConfig | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [chatCleared, setChatCleared] = useState(false);
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load live config on mount
   useEffect(() => {
     api.fetchConfig()
-      .then((cfg) => setConfig(cfg))
-      .catch(() => setConfig({ model: 'gemini-2.5-flash', confidence_threshold: 0.85, sovereign_cloud: false }))
+      .then((cfg) => {
+        setConfig(cfg);
+        setSavedConfig(cfg);
+      })
+      .catch(() => {
+        const defaults: AppConfig = { model: 'gemini-2.5-flash', confidence_threshold: 0.85, sovereign_cloud: false };
+        setConfig(defaults);
+        setSavedConfig(defaults);
+      })
       .finally(() => setLoading(false));
   }, []);
+
+  // Cleanup timeout on unmount
+  useEffect(() => () => { if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current); }, []);
+
+  const cfg = config ?? { model: 'gemini-2.5-flash', confidence_threshold: 0.85, sovereign_cloud: false };
+
+  // Dirty = current config differs from last saved
+  const isDirty = savedConfig !== null && JSON.stringify(cfg) !== JSON.stringify(savedConfig);
+
+  const handleSave = async () => {
+    if (!config || saveState === 'saving') return;
+    setSaveState('saving');
+    setSaveError(null);
+    try {
+      const confirmed = await api.saveConfig(config);
+      setSavedConfig(confirmed);
+      setSaveState('saved');
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => setSaveState('idle'), 3000);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setSaveError(msg);
+      setSaveState('error');
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+      saveTimeoutRef.current = setTimeout(() => setSaveState('idle'), 5000);
+    }
+  };
 
   const handleResetChat = () => {
     localStorage.removeItem(LS_CHAT_KEY);
@@ -40,19 +79,58 @@ export default function SettingsPage({
     setTimeout(() => setChatCleared(false), 2500);
   };
 
-  // Read-only for 6b — controls show live values, writes come in 6c
-  const cfg = config ?? { model: 'gemini-2.5-flash', confidence_threshold: 0.85, sovereign_cloud: false };
-
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
 
       {/* Header */}
-      <div>
-        <h2 className="text-2xl font-bold text-on-surface">System Configuration</h2>
-        <p className="text-xs font-sans text-on-surface-variant mt-1.5 max-w-2xl">
-          Global consensus indices thresholds, compliance rules, and underlying neural models.
-        </p>
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-2xl font-bold text-on-surface">System Configuration</h2>
+          <p className="text-xs font-sans text-on-surface-variant mt-1.5 max-w-2xl">
+            Global consensus indices thresholds, compliance rules, and underlying neural models.
+          </p>
+        </div>
+
+        {/* Save Config Button */}
+        <button
+          id="save-config-btn"
+          onClick={handleSave}
+          disabled={loading || saveState === 'saving' || (!isDirty && saveState === 'idle')}
+          className={`flex items-center gap-2 px-5 py-2 rounded text-xs font-bold uppercase tracking-wider border transition-all cursor-pointer disabled:cursor-not-allowed
+            ${saveState === 'saved'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+              : saveState === 'error'
+              ? 'bg-red-50 border-red-300 text-red-700'
+              : isDirty
+              ? 'bg-slate-deep text-white border-slate-deep hover:bg-black'
+              : 'bg-white border-border-subtle text-on-surface-variant opacity-50'
+            }`}
+        >
+          {saveState === 'saving' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+          {saveState === 'saved' && <CheckCircle className="w-3.5 h-3.5" />}
+          {saveState === 'error' && <AlertTriangle className="w-3.5 h-3.5" />}
+          {saveState === 'idle' && <Save className="w-3.5 h-3.5" />}
+          <span>
+            {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Config Saved' : saveState === 'error' ? 'Save Failed' : 'Save Config'}
+          </span>
+        </button>
       </div>
+
+      {/* Save error banner */}
+      {saveState === 'error' && saveError && (
+        <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700 font-sans">
+          <AlertTriangle className="w-4 h-4 shrink-0" />
+          <span><strong>Config save failed:</strong> {saveError}</span>
+        </div>
+      )}
+
+      {/* Unsaved changes banner */}
+      {isDirty && saveState === 'idle' && (
+        <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-200 rounded text-xs text-amber-800 font-sans">
+          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-500" />
+          <span>You have unsaved changes. Click <strong>Save Config</strong> to persist them to <code className="font-mono text-[10px] bg-amber-100 px-1 rounded">config.json</code>.</span>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-8 text-sm">
 

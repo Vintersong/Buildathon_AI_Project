@@ -353,6 +353,107 @@ async def ingest_candidate(file: UploadFile = File(...)):
     return _map_candidate(record_id, rec)
 
 
+class LinkedInReingestBody(BaseModel):
+    linkedinUrl: str
+
+
+@app.post("/api/candidates/{record_id}/reingest")
+async def reingest_candidate(
+    record_id: str,
+    file: Optional[UploadFile] = File(default=None),
+    body: Optional[str] = None,
+):
+    """
+    Re-ingest an existing candidate with either:
+    - A new CV file (multipart/form-data, field: file)
+    - An updated LinkedIn URL (application/json: { linkedinUrl })
+
+    File path: re-runs the full extract + merge pipeline with force=True.
+    LinkedIn path: updates identity.linkedin_url and emits a provenance event.
+    """
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
+
+    # --- File re-ingest path ---
+    if file is not None and file.filename:
+        suffix = Path(file.filename).suffix.lower()
+        if suffix not in (".pdf", ".txt"):
+            raise HTTPException(status_code=400, detail="Only .pdf and .txt files are supported")
+
+        cvs_dir = INTAKE_DIR / "cvs"
+        cvs_dir.mkdir(parents=True, exist_ok=True)
+        dest = cvs_dir / f"reingest_{record_id}_{uuid.uuid4().hex[:6]}{suffix}"
+        try:
+            with open(dest, "wb") as f:
+                shutil.copyfileobj(file.file, f)
+            # force=True skips the hash-dedup guard so the same file can update an existing record
+            ingest_file(dest, source_type="document_update", force=True)
+        except PermissionError as e:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=403, detail=str(e))
+        except Exception as e:
+            dest.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail=str(e))
+
+        updated = load_record(record_id)
+        if not updated:
+            raise HTTPException(status_code=500, detail="Record not found after re-ingest")
+        return _map_candidate(record_id, updated)
+
+    # --- LinkedIn URL update path ---
+    # FastAPI can't parse JSON body alongside optional File in the same handler via
+    # normal Pydantic model injection, so we read the raw request body manually.
+    # The frontend sends: Content-Type: application/json  { "linkedinUrl": "..." }
+    from fastapi import Request
+    raise HTTPException(
+        status_code=400,
+        detail="No file provided. For LinkedIn URL updates use the JSON body endpoint below."
+    )
+
+
+@app.post("/api/candidates/{record_id}/reingest/linkedin")
+async def reingest_candidate_linkedin(record_id: str, body: LinkedInReingestBody):
+    """
+    Update a candidate's stored LinkedIn URL and emit a provenance audit event.
+    Separate route to avoid multipart/JSON body mixing issues in FastAPI.
+    """
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
+
+    linkedin_url = body.linkedinUrl.strip()
+    if not linkedin_url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="linkedinUrl must start with https://")
+
+    now = datetime.utcnow().isoformat() + "Z"
+    old_url = rec.identity.linkedin_url or ""
+    rec.identity.linkedin_url = linkedin_url
+    rec.updated_at = now
+
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "linkedin_url_updated",
+        "timestamp": now,
+        "actor": {"type": "human"},
+        "source": {"record_id": record_id, "source_type": "linkedin_reingest"},
+        "changes": [{
+            "operation": "replace",
+            "path": "/identity/linkedin_url",
+            "old_value": old_url,
+            "new_value": linkedin_url,
+        }],
+        "confidence": 1.0,
+    }
+
+    try:
+        save_record(record_id, rec, event=event)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist record: {e}")
+
+    return _map_candidate(record_id, rec)
+
+
 class StatusPatch(BaseModel):
     complianceStatus: str
 

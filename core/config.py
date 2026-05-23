@@ -41,6 +41,11 @@ ENABLE_EXTERNAL_OUTREACH_LLM = os.getenv("ENABLE_EXTERNAL_OUTREACH_LLM", "false"
 # will be flagged by the auto-refresh job.
 STALE_REFRESH_MONTHS = int(os.getenv("STALE_REFRESH_MONTHS", "6"))
 
+# Intake safety limits — prevent DoS via oversized uploads.
+# Override via env vars (values in bytes / pages).
+MAX_INGEST_FILE_BYTES: int = int(os.getenv("MAX_INGEST_FILE_BYTES", str(5 * 1024 * 1024)))  # 5 MB
+MAX_PDF_PAGES: int = int(os.getenv("MAX_PDF_PAGES", "25"))
+
 
 def init_directories():
     directories = [

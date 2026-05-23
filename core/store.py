@@ -1,4 +1,5 @@
 import os
+import hashlib
 import json
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -62,7 +63,7 @@ def save_record(record_id: str, record: CandidateRecord, event: Optional[Dict[st
                 with open(temp_path, "w", encoding="utf-8") as f:
                     f.write(record.model_dump_json(indent=2))
                     f.flush()
-                    os.fsync(f.fileno())  # durability on second write too
+                    os.fsync(f.fileno())
                 os.replace(temp_path, path)
 
                 # Append to global JSONL log
@@ -77,8 +78,16 @@ def save_record(record_id: str, record: CandidateRecord, event: Optional[Dict[st
             raise StoreError(f"Failed to save record {record_id}: {str(e)}")
 
 
+def _email_hash(email: str) -> str:
+    return hashlib.sha256(email.lower().strip().encode()).hexdigest()
+
+
 def _update_record_index(record_id: str, record: CandidateRecord):
-    """Update the lightweight index for searching/listing."""
+    """Update the lightweight index for searching/listing.
+
+    Stores email_hashes alongside basic metadata so dedup.py can perform
+    identity lookups without loading full record files from disk.
+    """
     lock = FileLock(f"{RECORD_INDEX_PATH}.lock")
     with lock:
         try:
@@ -91,7 +100,9 @@ def _update_record_index(record_id: str, record: CandidateRecord):
             "name": record.identity.primary_name,
             "headline": record.profile.headline,
             "status": record.state.status,
-            "updated_at": record.updated_at
+            "updated_at": record.updated_at,
+            # Pre-compute email hashes for O(1) dedup lookups in dedup.py
+            "email_hashes": [_email_hash(e) for e in record.identity.emails],
         }
 
         with open(RECORD_INDEX_PATH, "w", encoding="utf-8") as f:

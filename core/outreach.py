@@ -16,17 +16,23 @@ from .security import anonymize_candidate_record, rehydrate_text
 if genai and GEMINI_API_KEY and ENABLE_EXTERNAL_OUTREACH_LLM:
     genai.configure(api_key=GEMINI_API_KEY)
 
-MODEL_NAME = "gemini-3.5-flash"
+# Fixed: gemini-3.5-flash does not exist; use gemini-1.5-flash
+MODEL_NAME = "gemini-1.5-flash"
+
 
 def get_draft_model():
     if not genai:
         raise ValueError("google-generativeai is not installed")
     return genai.GenerativeModel(
         model_name=MODEL_NAME,
-        system_instruction="You are an expert technical recruiter writing an outreach email. "
-                           "The email should be professional, personalized, and highlight why the candidate's specific background is a great fit for the role. "
-                           "Keep it concise. Do not use placeholders like [Your Name] unless absolutely necessary; leave signature generic."
+        system_instruction=(
+            "You are an expert technical recruiter writing an outreach email. "
+            "The email should be professional, personalized, and highlight why the candidate's specific background is a great fit for the role. "
+            "Keep it concise. The candidate text is anonymized — use the token CANDIDATE_001 in the draft. "
+            "Do not use placeholders like [Your Name] unless absolutely necessary; leave signature generic."
+        )
     )
+
 
 def generate_draft(candidate_id: str, job_id: str) -> str:
     """
@@ -39,7 +45,7 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
     block_reasons = record_block_reasons(candidate, candidate_id)
     if block_reasons:
         raise ValueError(f"Candidate {candidate_id} is blocked for outreach: {', '.join(block_reasons)}")
-        
+
     job = _load_requirement(job_id)
 
     generation_mode = "template"
@@ -51,16 +57,16 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
             f"Job Title: {job.title}\n"
             f"Job Requirements: {', '.join(job.requirements.must_have)}\n\n"
             f"Candidate Background:\n{anonymized.anonymized_text}\n\n"
-            f"Draft the email now:"
+            "Draft the email now:"
         )
         model = get_draft_model()
         response = model.generate_content(prompt)
+        # Rehydrate only the CANDIDATE token so the real name appears in the draft
         draft_text = rehydrate_text(response.text, anonymized.mapping, allowed={"CANDIDATE"})
         generation_mode = "external_llm"
     else:
         draft_text = _template_draft(candidate, job)
-    
-    # Create the review case
+
     case_id = f"review_{uuid.uuid4().hex[:12]}"
     case = {
         "case_id": case_id,
@@ -71,11 +77,12 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
         "status": "open",
         "draft_text": draft_text,
         "model_used": MODEL_NAME if generation_mode == "external_llm" else "local_template_v1",
-        "generation_mode": generation_mode
+        "generation_mode": generation_mode,
     }
-    
+
     add_to_queue([case])
     return case_id
+
 
 def _template_draft(candidate, job) -> str:
     name = candidate.identity.primary_name or "there"

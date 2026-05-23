@@ -21,9 +21,10 @@ from .store import load_record, save_record
 from .events import log_error
 from .dedup import find_existing_by_identity
 
-# Default consent basis applied to newly ingested records.
-# Override via DEFAULT_CONSENT_BASIS env var or by patching in tests.
-DEFAULT_CONSENT_BASIS: Optional[str] = os.getenv("DEFAULT_CONSENT_BASIS")
+# Consent basis applied to newly ingested records.
+# "legitimate_interest" is the GDPR basis most appropriate for recruitment.
+# Override via DEFAULT_CONSENT_BASIS env var if your legal basis differs.
+DEFAULT_CONSENT_BASIS: str = os.getenv("DEFAULT_CONSENT_BASIS", "legitimate_interest")
 
 # OCR support — optional, gracefully degraded if tesseract is not installed
 try:
@@ -125,17 +126,12 @@ def _merge_record(record: CandidateRecord, extraction, now: str) -> list[dict]:
 
     Strategy:
     - OVERWRITE: point-in-time fields where the newest CV is ground truth
-      (seniority, years_of_experience, location, summary, headline,
-       primary_name, linkedin_url)
-    - UNION (order-preserving dedup): accumulative fields where history
-      must be preserved (technologies_used, study_degrees, languages_spoken,
-      previous_jobs, projects_developed, emails)
+    - UNION (order-preserving dedup): accumulative fields where history must be preserved
 
     Returns a list of change dicts for the provenance audit event.
     """
     changes = []
 
-    # --- OVERWRITE fields ---
     overwrite_map = [
         ("profile", "seniority",           extraction.seniority),
         ("profile", "years_of_experience",  extraction.years_of_experience),
@@ -159,7 +155,6 @@ def _merge_record(record: CandidateRecord, extraction, now: str) -> list[dict]:
                 "new_value": new_val,
             })
 
-    # --- UNION fields (order-preserving, case-sensitive dedup) ---
     def _union(existing: list, incoming: list, path: str) -> list:
         existing = existing or []
         incoming = incoming or []
@@ -170,37 +165,18 @@ def _merge_record(record: CandidateRecord, extraction, now: str) -> list[dict]:
         return merged
 
     record.profile.technologies_used = _union(
-        record.profile.technologies_used,
-        extraction.technologies_used,
-        "/profile/technologies_used",
-    )
+        record.profile.technologies_used, extraction.technologies_used, "/profile/technologies_used")
     record.profile.study_degrees = _union(
-        record.profile.study_degrees,
-        extraction.study_degrees,
-        "/profile/study_degrees",
-    )
+        record.profile.study_degrees, extraction.study_degrees, "/profile/study_degrees")
     record.profile.languages_spoken = _union(
-        record.profile.languages_spoken,
-        extraction.languages_spoken,
-        "/profile/languages_spoken",
-    )
+        record.profile.languages_spoken, extraction.languages_spoken, "/profile/languages_spoken")
     record.profile.previous_jobs = _union(
-        record.profile.previous_jobs,
-        extraction.previous_jobs,
-        "/profile/previous_jobs",
-    )
+        record.profile.previous_jobs, extraction.previous_jobs, "/profile/previous_jobs")
     record.profile.projects_developed = _union(
-        record.profile.projects_developed,
-        extraction.projects_developed,
-        "/profile/projects_developed",
-    )
+        record.profile.projects_developed, extraction.projects_developed, "/profile/projects_developed")
     record.identity.emails = _union(
-        record.identity.emails,
-        extraction.emails,
-        "/identity/emails",
-    )
+        record.identity.emails, extraction.emails, "/identity/emails")
 
-    # Confidence always takes the latest value
     record.scores.extraction_confidence = extraction.extraction_confidence
     record.updated_at = now
 
@@ -213,12 +189,10 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
     create or update record, then run compliance checks.
     Returns the record_id.
     """
-    # 1. Path allowlist check
     if not file_path.resolve().is_relative_to(INTAKE_DIR.resolve()):
         _quarantine_security(file_path, "path_not_allowed")
         raise PermissionError("File path is outside configured intake roots")
 
-    # 2. Hash-based duplicate check
     file_hash = compute_sha256(file_path)
     existing_by_hash = check_manifest(file_hash)
 
@@ -226,7 +200,6 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
         print(f"Skipping {file_path.name}: already ingested (hash match) into {existing_by_hash}")
         return existing_by_hash
 
-    # 3. Extract Text (size + page limits enforced inside)
     try:
         raw_text = extract_text_from_file(file_path)
     except Exception as e:
@@ -240,17 +213,14 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
         })
         raise
 
-    # 4. LLM Extraction
     extraction, model_info = extract_candidate_data(raw_text)
 
-    # 5. Identity-based duplicate check (catches same candidate, different file)
     existing_by_identity = find_existing_by_identity(extraction)
     existing_record_id = existing_by_hash or existing_by_identity
 
     if existing_by_identity and not existing_by_hash:
         print(f"Identity match found for {file_path.name}: merging into existing record {existing_by_identity}")
 
-    # 6. Record Creation / Update
     record_id = existing_record_id or f"cand_{uuid.uuid4().hex[:12]}"
     now = datetime.utcnow().isoformat() + "Z"
 
@@ -289,7 +259,6 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
     else:
         merge_changes = _merge_record(record, extraction, now)
 
-    # 7. Provenance Event
     event = {
         "event_id": f"evt_{uuid.uuid4().hex[:12]}",
         "event_type": "source_ingested",
@@ -311,10 +280,8 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
         },
     }
 
-    # 8. Save Atomically
     save_record(record_id, record, event=event)
 
-    # 9. Run compliance checks and queue any violations for human review
     try:
         from .compliance import evaluate_compliance
         from .review import add_to_queue
@@ -330,7 +297,6 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
             "message": str(e),
         })
 
-    # 10. Update manifest
     update_manifest(file_hash, record_id)
 
     print(f"Successfully ingested {file_path.name} into {record_id}")

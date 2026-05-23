@@ -7,7 +7,7 @@ from filelock import FileLock
 
 from .config import RECORDS_DIR, RECORD_INDEX_PATH
 from .events import log_event
-from .schemas import CandidateRecord
+from .schemas import CandidateRecord, State, Compliance
 
 
 class SecurityError(Exception):
@@ -30,8 +30,27 @@ def _resolve_record_path(record_id: str) -> Path:
     return path
 
 
+def _coerce_record(record: CandidateRecord) -> CandidateRecord:
+    """
+    Backfill missing fields on records written by older schema versions.
+    Runs after every load so legacy JSON on disk never causes AttributeErrors.
+    """
+    # state: may be None on records written before State was added
+    if record.state is None:
+        record.state = State()
+
+    # consent_basis: default to legitimate_interest so compliance engine
+    # doesn't flood the review queue with null-consent flags on every record
+    if record.compliance is None:
+        record.compliance = Compliance()
+    if not record.compliance.consent_basis:
+        record.compliance.consent_basis = "legitimate_interest"
+
+    return record
+
+
 def load_record(record_id: str) -> Optional[CandidateRecord]:
-    """Load a candidate record by ID."""
+    """Load a candidate record by ID, applying legacy field coercion."""
     path = _resolve_record_path(record_id)
     if not path.exists():
         return None
@@ -39,7 +58,8 @@ def load_record(record_id: str) -> Optional[CandidateRecord]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    return CandidateRecord(**data)
+    record = CandidateRecord(**data)
+    return _coerce_record(record)
 
 
 def save_record(record_id: str, record: CandidateRecord, event: Optional[Dict[str, Any]] = None):
@@ -50,7 +70,6 @@ def save_record(record_id: str, record: CandidateRecord, event: Optional[Dict[st
     with lock:
         temp_path = path.with_suffix(".json.tmp")
         try:
-            # First write: record without the new event
             with open(temp_path, "w", encoding="utf-8") as f:
                 f.write(record.model_dump_json(indent=2))
                 f.flush()
@@ -58,7 +77,6 @@ def save_record(record_id: str, record: CandidateRecord, event: Optional[Dict[st
             os.replace(temp_path, path)
 
             if event:
-                # Append event to provenance then re-save with full durability
                 record.provenance.append(event)
                 with open(temp_path, "w", encoding="utf-8") as f:
                     f.write(record.model_dump_json(indent=2))
@@ -66,10 +84,8 @@ def save_record(record_id: str, record: CandidateRecord, event: Optional[Dict[st
                     os.fsync(f.fileno())
                 os.replace(temp_path, path)
 
-                # Append to global JSONL log
                 log_event(event)
 
-            # Update index
             _update_record_index(record_id, record)
 
         except Exception as e:
@@ -83,11 +99,7 @@ def _email_hash(email: str) -> str:
 
 
 def _update_record_index(record_id: str, record: CandidateRecord):
-    """Update the lightweight index for searching/listing.
-
-    Stores email_hashes alongside basic metadata so dedup.py can perform
-    identity lookups without loading full record files from disk.
-    """
+    """Update the lightweight index for searching/listing."""
     lock = FileLock(f"{RECORD_INDEX_PATH}.lock")
     with lock:
         try:
@@ -99,9 +111,8 @@ def _update_record_index(record_id: str, record: CandidateRecord):
         index[record_id] = {
             "name": record.identity.primary_name,
             "headline": record.profile.headline,
-            "status": record.state.status,
+            "status": record.state.status if record.state else "new",
             "updated_at": record.updated_at,
-            # Pre-compute email hashes for O(1) dedup lookups in dedup.py
             "email_hashes": [_email_hash(e) for e in record.identity.emails],
         }
 

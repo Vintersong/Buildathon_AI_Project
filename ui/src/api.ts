@@ -25,6 +25,25 @@ export function ingestCandidate(file: File): Promise<Candidate> {
   return request<Candidate>(`${BASE}/candidates/ingest`, { method: 'POST', body: form });
 }
 
+/**
+ * Re-ingest an existing candidate by ID.
+ * Accepts either a new CV file OR a LinkedIn URL string — not both.
+ * Endpoint: POST /api/candidates/:id/reingest
+ */
+export function reingestCandidate(id: string, source: File | string): Promise<Candidate> {
+  if (source instanceof File) {
+    const form = new FormData();
+    form.append('file', source);
+    return request<Candidate>(`${BASE}/candidates/${id}/reingest`, { method: 'POST', body: form });
+  }
+  // LinkedIn URL path
+  return request<Candidate>(`${BASE}/candidates/${id}/reingest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ linkedinUrl: source }),
+  });
+}
+
 export function patchCandidateStatus(
   id: string,
   complianceStatus: Candidate['complianceStatus']

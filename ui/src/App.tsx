@@ -17,6 +17,24 @@ import AIAgentSidebar from './components/AIAgentSidebar';
 import { Candidate, AuditEvent, JobRequirement, ReviewTask } from './types';
 import * as api from './api';
 
+// ── Dismissed shortlist persistence ─────────────────────────────────────────
+// Shape: { [jobId]: string[] }  — candidate IDs dismissed for that job
+const LS_DISMISSED_KEY = 'bld_dismissed_shortlist';
+
+function loadDismissed(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(LS_DISMISSED_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return {};
+}
+
+function saveDismissed(map: Record<string, string[]>) {
+  try {
+    localStorage.setItem(LS_DISMISSED_KEY, JSON.stringify(map));
+  } catch { /* quota exceeded */ }
+}
+
 export default function App() {
   const [activeScreen, setActiveScreen] = useState<'candidates' | 'jobs' | 'review' | 'audit' | 'settings'>('candidates');
   const [searchQuery, setSearchQuery] = useState('');
@@ -25,6 +43,9 @@ export default function App() {
   const [jobs, setJobs] = useState<JobRequirement[]>([]);
   const [reviewTasks, setReviewTasks] = useState<ReviewTask[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+
+  // dismissed[jobId] = Set of candidate IDs hidden by the user
+  const [dismissed, setDismissed] = useState<Record<string, string[]>>(loadDismissed);
 
   const [isSynced, setIsSynced] = useState(true);
   const [notificationsCount, setNotificationsCount] = useState(0);
@@ -64,7 +85,18 @@ export default function App() {
     refreshAll();
   }, [refreshAll]);
 
-  // 1. Ingest Candidate — receives File from the updated IngestModal
+  // Apply dismissed filter to jobs before passing down
+  const jobsWithDismissalApplied = jobs.map((job) => {
+    const dismissedIds = new Set(dismissed[job.id] || []);
+    if (dismissedIds.size === 0) return job;
+    return {
+      ...job,
+      shortlist: job.shortlist.filter((c) => !dismissedIds.has(c.id)),
+      _dismissedCount: dismissedIds.size,
+    } as JobRequirement & { _dismissedCount: number };
+  });
+
+  // 1. Ingest Candidate
   const handleIngestCandidate = async (file: File) => {
     markSyncing();
     try {
@@ -133,14 +165,37 @@ export default function App() {
     triggerToast('Direct status override completed for Candidate record.');
   };
 
-  const handleDismissLowMatches = () => {
-    setJobs((prev) =>
-      prev.map((job) => ({
-        ...job,
-        shortlist: job.shortlist.filter((candidate) => candidate.confidence >= 0.75 || candidate.status === 'pending_review'),
-      }))
-    );
-    triggerToast('Low-confidence shortlist matches hidden from the current matrix.', 'info');
+  // 5. Dismiss low matches — persisted to localStorage per job
+  const handleDismissLowMatches = (jobId: string) => {
+    const job = jobs.find((j) => j.id === jobId);
+    if (!job) return;
+
+    const alreadyDismissed = new Set(dismissed[jobId] || []);
+    const toDismiss = job.shortlist
+      .filter((c) => c.confidence < 0.75 && c.status !== 'pending_review')
+      .map((c) => c.id);
+
+    if (toDismiss.length === 0) {
+      triggerToast('No low-confidence candidates to dismiss for this role.', 'info');
+      return;
+    }
+
+    const updated = {
+      ...dismissed,
+      [jobId]: [...alreadyDismissed, ...toDismiss],
+    };
+    setDismissed(updated);
+    saveDismissed(updated);
+    triggerToast(`${toDismiss.length} low-confidence match(es) hidden from matrix. Refresh to restore.`, 'info');
+  };
+
+  // 5b. Restore dismissed candidates for a job
+  const handleRestoreDismissed = (jobId: string) => {
+    const updated = { ...dismissed };
+    delete updated[jobId];
+    setDismissed(updated);
+    saveDismissed(updated);
+    triggerToast('Dismissed candidates restored to shortlist.', 'info');
   };
 
   return (
@@ -189,13 +244,14 @@ export default function App() {
 
           {activeScreen === 'jobs' && (
             <JobRequirements
-              jobs={jobs}
+              jobs={jobsWithDismissalApplied}
               searchQuery={searchQuery}
               onNavigate={(sc) => { setActiveScreen(sc); setSearchQuery(''); }}
               onOpenReviewTask={(taskId) => { setFocusedTaskId(taskId); setActiveScreen('review'); }}
               onAddJob={handleAddJob}
               reviewTasks={reviewTasks}
               onBulkDismiss={handleDismissLowMatches}
+              onRestoreDismissed={handleRestoreDismissed}
             />
           )}
 

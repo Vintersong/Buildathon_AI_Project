@@ -4,17 +4,18 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { User, Plus, FileDown, Briefcase, Trash } from 'lucide-react';
+import { User, Plus, FileDown, Briefcase, Trash, RotateCcw } from 'lucide-react';
 import { JobRequirement, ReviewTask } from '../types';
 
 interface JobRequirementsProps {
-  jobs: JobRequirement[];
+  jobs: (JobRequirement & { _dismissedCount?: number })[];
   searchQuery: string;
   onNavigate: (screen: 'candidates' | 'jobs' | 'review' | 'audit' | 'settings') => void;
   onOpenReviewTask: (taskId: string) => void;
   onAddJob: (job: Omit<JobRequirement, 'id' | 'candidatesProcessed' | 'shortlist'>) => void;
   reviewTasks: ReviewTask[];
-  onBulkDismiss?: () => void;
+  onBulkDismiss?: (jobId: string) => void;
+  onRestoreDismissed?: (jobId: string) => void;
 }
 
 export default function JobRequirements({
@@ -24,7 +25,8 @@ export default function JobRequirements({
   onOpenReviewTask,
   onAddJob,
   reviewTasks,
-  onBulkDismiss
+  onBulkDismiss,
+  onRestoreDismissed,
 }: JobRequirementsProps) {
   const [selectedJobId, setSelectedJobId] = useState<string>(jobs[0]?.id || '');
   const [showAddJobForm, setShowAddJobForm] = useState(false);
@@ -32,7 +34,6 @@ export default function JobRequirements({
   const [newDeps, setNewDeps] = useState('Fintech Core Platform');
   const [newLoc, setNewLoc] = useState('Austin/Remote');
 
-  // Filter jobs by search
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
       if (searchQuery.trim()) {
@@ -47,7 +48,6 @@ export default function JobRequirements({
     });
   }, [jobs, searchQuery]);
 
-  // Find currently active selected job
   const activeJob = useMemo(() => {
     return jobs.find((j) => j.id === selectedJobId) || jobs[0];
   }, [jobs, selectedJobId]);
@@ -55,7 +55,6 @@ export default function JobRequirements({
   const handleCreateJob = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
-
     onAddJob({
       title: newTitle.trim(),
       department: newDeps,
@@ -63,14 +62,15 @@ export default function JobRequirements({
       status: 'MATCHING',
       tags: ['MATCHING', 'NEW']
     });
-
     setNewTitle('');
     setShowAddJobForm(false);
   };
 
+  const activeDismissedCount = (activeJob as any)?._dismissedCount ?? 0;
+
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
-      {/* Header and top-level action buttons */}
+      {/* Header */}
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-on-surface">Job Match Matrix</h2>
@@ -106,7 +106,7 @@ export default function JobRequirements({
         </div>
       </header>
 
-      {/* Add Job Overlay Form */}
+      {/* Add Job Form */}
       {showAddJobForm && (
         <form onSubmit={handleCreateJob} className="p-6 bg-surface border border-slate-deep rounded-md space-y-4 font-sans max-w-md animate-in slide-in-from-top-6 duration-200">
           <h4 className="font-bold text-sm text-slate-900 font-sans">Initialize Technical Requirement</h4>
@@ -147,51 +147,34 @@ export default function JobRequirements({
             </div>
           </div>
           <div className="flex gap-2 justify-end pt-2">
-            <button
-              id="cancel-job-form"
-              type="button"
-              onClick={() => setShowAddJobForm(false)}
-              className="px-3 py-1.5 border border-border-subtle rounded text-xs hover:bg-white cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              id="submit-job-form"
-              type="submit"
-              className="px-4 py-1.5 bg-slate-deep text-white rounded text-xs font-semibold hover:bg-black cursor-pointer"
-            >
-              Confirm Deployment
-            </button>
+            <button id="cancel-job-form" type="button" onClick={() => setShowAddJobForm(false)} className="px-3 py-1.5 border border-border-subtle rounded text-xs hover:bg-white cursor-pointer">Cancel</button>
+            <button id="submit-job-form" type="submit" className="px-4 py-1.5 bg-slate-deep text-white rounded text-xs font-semibold hover:bg-black cursor-pointer">Confirm Deployment</button>
           </div>
         </form>
       )}
 
-      {/* Main Grid View */}
+      {/* Main Grid */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-8 h-[calc(100vh-220px)] min-h-[500px]">
-        
-        {/* Left Column: Job Selection Panel */}
+
+        {/* Left: Job List */}
         <div className="md:col-span-4 flex flex-col gap-4 h-full overflow-hidden select-none">
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-bold font-sans uppercase tracking-wider text-on-surface-variant">
               ACTIVE REQUIREMENTS ({filteredJobs.length})
             </h3>
-            <span className="text-[10px] font-mono tracking-wide bg-surface-container-high px-2 py-0.5 rounded font-bold">
-              AUTO-REFRESH: ON
-            </span>
+            <span className="text-[10px] font-mono tracking-wide bg-surface-container-high px-2 py-0.5 rounded font-bold">AUTO-REFRESH: ON</span>
           </div>
 
           <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar flex flex-col gap-3">
             {filteredJobs.length === 0 ? (
-              <div className="text-center py-12 text-xs text-on-surface-variant border border-dashed border-border-subtle rounded-lg">
-                No active jobs. Click 'Create New Job' above.
-              </div>
+              <div className="text-center py-12 text-xs text-on-surface-variant border border-dashed border-border-subtle rounded-lg">No active jobs. Click 'Create New Job' above.</div>
             ) : (
               filteredJobs.map((job) => {
                 const isActive = job.id === selectedJobId;
                 const isMatching = job.status === 'MATCHING';
-                const isStalled = job.status === 'STALLED';
                 const isValidating = job.status === 'VALIDATING';
                 const isArchived = job.status === 'ARCHIVED';
+                const dismissed = (job as any)._dismissedCount ?? 0;
 
                 let badgeColor = 'bg-surface-container-high text-on-surface-variant';
                 if (isMatching) badgeColor = 'bg-status-ok/10 text-status-ok border border-status-ok/20';
@@ -204,33 +187,21 @@ export default function JobRequirements({
                     key={job.id}
                     onClick={() => setSelectedJobId(job.id)}
                     className={`p-5 rounded-lg cursor-pointer transition-all ${
-                      isActive
-                        ? 'bg-white border-2 border-primary shadow-xs'
-                        : 'bg-white border border-border-subtle hover:border-slate-400'
+                      isActive ? 'bg-white border-2 border-primary shadow-xs' : 'bg-white border border-border-subtle hover:border-slate-400'
                     }`}
                   >
                     <div className="flex justify-between items-start mb-2 gap-2">
-                      <h4 className={`text-sm font-sans font-bold leading-tight ${isActive ? 'text-primary' : 'text-on-surface'}`}>
-                        {job.title}
-                      </h4>
-                      <span className={`font-mono font-bold text-[10px] uppercase px-1.5 py-0.5 rounded shrink-0 ${badgeColor}`}>
-                        {job.status}
-                      </span>
+                      <h4 className={`text-sm font-sans font-bold leading-tight ${isActive ? 'text-primary' : 'text-on-surface'}`}>{job.title}</h4>
+                      <span className={`font-mono font-bold text-[10px] uppercase px-1.5 py-0.5 rounded shrink-0 ${badgeColor}`}>{job.status}</span>
                     </div>
-                    
-                    <p className="text-xs text-on-surface-variant font-sans mt-1">
-                      {job.department} • {job.location}
-                    </p>
-
+                    <p className="text-xs text-on-surface-variant font-sans mt-1">{job.department} • {job.location}</p>
+                    {dismissed > 0 && (
+                      <p className="text-[10px] font-mono text-amber-600 mt-1">{dismissed} match{dismissed > 1 ? 'es' : ''} hidden</p>
+                    )}
                     {job.tags && job.tags.length > 0 && (
                       <div className="flex gap-1.5 mt-4">
                         {job.tags.map((tg) => (
-                          <span
-                            key={tg}
-                            className="bg-surface text-on-surface-variant font-sans text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded border border-border-subtle uppercase"
-                          >
-                            {tg}
-                          </span>
+                          <span key={tg} className="bg-surface text-on-surface-variant font-sans text-[10px] font-semibold tracking-wider px-2 py-0.5 rounded border border-border-subtle uppercase">{tg}</span>
                         ))}
                       </div>
                     )}
@@ -241,33 +212,23 @@ export default function JobRequirements({
           </div>
         </div>
 
-        {/* Right Column: Shortlist Candidates List */}
+        {/* Right: Shortlist */}
         <div className="md:col-span-8 bg-white border border-border-subtle rounded-lg flex flex-col h-full overflow-hidden shrink-0">
-          
-          {/* Panel Header */}
+
           <div className="p-6 border-b border-border-subtle bg-surface-container-lowest flex items-center justify-between">
             <div>
               <div className="flex items-center gap-2 mb-1">
                 <h3 className="font-sans font-bold text-base text-primary">Candidate Shortlist</h3>
-                <span className="text-on-surface-variant font-sans text-xs opacity-60">
-                  / {activeJob ? activeJob.title : 'Details'}
-                </span>
+                <span className="text-on-surface-variant font-sans text-xs opacity-60">/ {activeJob ? activeJob.title : 'Details'}</span>
               </div>
-              <p className="text-xs text-on-surface-variant font-sans">
-                Top candidates ranked by Precision Reranking Engine v4.2
-              </p>
+              <p className="text-xs text-on-surface-variant font-sans">Top candidates ranked by Precision Reranking Engine v4.2</p>
             </div>
             <div className="text-right shrink-0">
-              <p className="text-[10px] font-sans font-bold text-on-surface-variant mb-1 uppercase tracking-wide">
-                CANDIDATES PROCESSED
-              </p>
-              <p className="font-mono font-bold text-lg text-primary">
-                {activeJob ? activeJob.candidatesProcessed.toLocaleString() : '1,482'}
-              </p>
+              <p className="text-[10px] font-sans font-bold text-on-surface-variant mb-1 uppercase tracking-wide">CANDIDATES PROCESSED</p>
+              <p className="font-mono font-bold text-lg text-primary">{activeJob ? activeJob.candidatesProcessed.toLocaleString() : '1,482'}</p>
             </div>
           </div>
 
-          {/* Table Container */}
           <div className="flex-1 overflow-y-auto p-6 custom-scrollbar text-sm">
             {!activeJob || !activeJob.shortlist || activeJob.shortlist.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center text-on-surface-variant font-sans space-y-4 py-12">
@@ -275,26 +236,25 @@ export default function JobRequirements({
                 <p className="text-xs leading-relaxed max-w-xs">
                   No matches synced. This role is currently processed under the initial heuristic validator sequence.
                 </p>
+                {activeDismissedCount > 0 && (
+                  <button
+                    onClick={() => activeJob && onRestoreDismissed?.(activeJob.id)}
+                    className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700 border border-amber-300 bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded transition-colors cursor-pointer"
+                  >
+                    <RotateCcw className="w-3 h-3" />
+                    Restore {activeDismissedCount} hidden match{activeDismissedCount > 1 ? 'es' : ''}
+                  </button>
+                )}
               </div>
             ) : (
               <table className="w-full text-left border-collapse font-sans">
                 <thead>
                   <tr className="bg-surface-container-low">
-                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">
-                      RANK
-                    </th>
-                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">
-                      CANDIDATE
-                    </th>
-                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">
-                      CONFIDENCE
-                    </th>
-                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">
-                      LLM EXPLANATION
-                    </th>
-                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">
-                      ACTIONS
-                    </th>
+                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">RANK</th>
+                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">CANDIDATE</th>
+                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">CONFIDENCE</th>
+                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">LLM EXPLANATION</th>
+                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">ACTIONS</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border-subtle font-sans font-medium">
@@ -304,23 +264,12 @@ export default function JobRequirements({
                     const isActionRequired = candidate.status === 'pending_review';
 
                     return (
-                      <tr
-                        key={candidate.id}
-                        className={`hover:bg-slate-50 transition-colors ${
-                          isActionRequired ? 'bg-status-review/5' : ''
-                        }`}
-                      >
-                        {/* Rank */}
-                        <td className={`py-4 px-4 font-mono font-bold text-xs ${isRankOne ? 'text-bloodhound-crimson' : 'text-on-surface-variant'}`}>
-                          #{rankNum}
-                        </td>
+                      <tr key={candidate.id} className={`hover:bg-slate-50 transition-colors ${isActionRequired ? 'bg-status-review/5' : ''}`}>
+                        <td className={`py-4 px-4 font-mono font-bold text-xs ${isRankOne ? 'text-bloodhound-crimson' : 'text-on-surface-variant'}`}>#{rankNum}</td>
 
-                        {/* Profile initials + ID */}
                         <td className="py-4 px-4">
                           <div className="flex items-center gap-3">
-                            <div className={`w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 border ${
-                              isActionRequired ? 'border-status-review/50' : 'border-transparent'
-                            }`}>
+                            <div className={`w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 border ${isActionRequired ? 'border-status-review/50' : 'border-transparent'}`}>
                               {isActionRequired ? (
                                 <span className="text-xs font-bold text-status-review">{candidate.initials}</span>
                               ) : (
@@ -334,35 +283,25 @@ export default function JobRequirements({
                           </div>
                         </td>
 
-                        {/* Confidence score bar */}
                         <td className="py-4 px-4">
                           <div className="flex items-center gap-2 max-w-[130px]">
                             <div className="flex-1 bg-surface-container-high h-1.5 w-16 rounded-full overflow-hidden shrink-0">
-                              <div
-                                className={`h-full rounded-full ${isActionRequired ? 'bg-status-review' : 'bg-status-ok'}`}
-                                style={{ width: `${candidate.confidence * 100}%` }}
-                              ></div>
+                              <div className={`h-full rounded-full ${isActionRequired ? 'bg-status-review' : 'bg-status-ok'}`} style={{ width: `${candidate.confidence * 100}%` }}></div>
                             </div>
-                            <span className={`font-mono font-bold text-xs shrink-0 ${isActionRequired ? 'text-status-review' : 'text-status-ok'}`}>
-                              {candidate.confidence.toFixed(3)}
-                            </span>
+                            <span className={`font-mono font-bold text-xs shrink-0 ${isActionRequired ? 'text-status-review' : 'text-status-ok'}`}>{candidate.confidence.toFixed(3)}</span>
                           </div>
                         </td>
 
-                        {/* LLM Explanation Quote details */}
                         <td className="py-4 px-4 max-w-xs">
                           <div className={`p-2.5 rounded border ${
                             isActionRequired
                               ? 'bg-status-review/5 border-dashed border-status-review/30 text-status-review'
                               : 'bg-surface-container-low border-border-subtle text-on-surface-variant'
                           }`}>
-                            <p className="text-[11px] leading-relaxed italic font-medium font-sans">
-                              "{candidate.explanation}"
-                            </p>
+                            <p className="text-[11px] leading-relaxed italic font-medium font-sans">"{candidate.explanation}"</p>
                           </div>
                         </td>
 
-                        {/* Task queue action trigger link */}
                         <td className="py-4 px-4">
                           {isActionRequired ? (() => {
                             const task = reviewTasks.find(t =>
@@ -407,20 +346,29 @@ export default function JobRequirements({
             )}
           </div>
 
-          {/* Bulk Action & footer Pagination details link */}
+          {/* Bulk Actions Footer */}
           <div className="p-4 bg-surface-container-low border-t border-border-subtle flex items-center justify-between font-sans select-none shrink-0 text-xs">
             <div className="flex items-center gap-4">
               <span className="font-bold text-on-surface-variant uppercase tracking-wider text-[10px]">BULK ACTIONS:</span>
               <button
                 id="bulk-dismiss-low"
                 className="text-on-surface-variant hover:text-primary transition-colors flex items-center gap-1 cursor-pointer font-semibold"
-                onClick={() => onBulkDismiss?.()}
+                onClick={() => activeJob && onBulkDismiss?.(activeJob.id)}
               >
                 <Trash className="w-3.5 h-3.5" />
                 <span>Dismiss Low Matches</span>
               </button>
+              {activeDismissedCount > 0 && (
+                <button
+                  id="restore-dismissed-btn"
+                  className="text-amber-600 hover:text-amber-800 transition-colors flex items-center gap-1 cursor-pointer font-semibold"
+                  onClick={() => activeJob && onRestoreDismissed?.(activeJob.id)}
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>Restore {activeDismissedCount} Hidden</span>
+                </button>
+              )}
             </div>
-            
             <div className="flex items-center gap-2">
               <span className="text-on-surface-variant">
                 {activeJob?.shortlist?.length
@@ -429,7 +377,6 @@ export default function JobRequirements({
               </span>
             </div>
           </div>
-
         </div>
       </div>
     </div>

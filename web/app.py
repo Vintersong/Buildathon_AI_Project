@@ -521,6 +521,49 @@ async def resolve_review_task(case_id: str, body: ResolveBody):
     return {"ok": True}
 
 
+class OutreachDraftBody(BaseModel):
+    candidateId: str
+    jobId: str
+    candidateName: str
+    jobTitle: str
+
+
+@app.post("/api/review/outreach-draft")
+async def create_outreach_draft(body: OutreachDraftBody):
+    """
+    Ask the agent to generate a personalised outreach email for a shortlisted
+    candidate + job pairing.  Creates an OUTREACH_DRAFT ReviewTask and returns
+    it immediately so the UI can open it in the ReviewQueue without a reload.
+    """
+    from core.outreach import generate_draft
+
+    # Guard: don't create a duplicate if one is already open for this candidate
+    existing_cases = get_review_queue()
+    for case in existing_cases:
+        if (
+            case.get("record_id") == body.candidateId
+            and case.get("job_id") == body.jobId
+            and "outreach" in case.get("reason", "")
+            and case.get("status") == "open"
+        ):
+            return _map_review_task(case)
+
+    try:
+        case_id = generate_draft(body.candidateId, body.jobId)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Outreach generation failed: {e}")
+
+    # Reload the queue to find the freshly created case and return it mapped
+    all_cases = get_review_queue()
+    new_case = next((c for c in all_cases if c.get("case_id") == case_id), None)
+    if not new_case:
+        raise HTTPException(status_code=500, detail="Case created but not found in queue")
+
+    return _map_review_task(new_case)
+
+
 # ---------------------------------------------------------------------------
 # Audit log endpoint
 # ---------------------------------------------------------------------------

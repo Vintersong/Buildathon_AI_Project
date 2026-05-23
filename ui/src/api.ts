@@ -36,7 +36,6 @@ export function reingestCandidate(id: string, source: File | string): Promise<Ca
     form.append('file', source);
     return request<Candidate>(`${BASE}/candidates/${id}/reingest`, { method: 'POST', body: form });
   }
-  // LinkedIn URL path
   return request<Candidate>(`${BASE}/candidates/${id}/reingest`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -85,6 +84,27 @@ export function resolveTask(caseId: string, resolution: string): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resolution, reviewer: 'human_operator' }),
+  });
+}
+
+/**
+ * Ask the agent to generate a personalised outreach email draft for a
+ * shortlisted candidate + job pairing.  The backend creates an
+ * OUTREACH_DRAFT ReviewTask and returns it so the UI can immediately
+ * open it in the ReviewQueue without a full page reload.
+ *
+ * Endpoint: POST /api/review/outreach-draft
+ */
+export function createOutreachDraft(
+  candidateId: string,
+  jobId: string,
+  candidateName: string,
+  jobTitle: string
+): Promise<ReviewTask> {
+  return request<ReviewTask>(`${BASE}/review/outreach-draft`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ candidateId, jobId, candidateName, jobTitle }),
   });
 }
 

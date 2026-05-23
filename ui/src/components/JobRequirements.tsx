@@ -3,9 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
-import { User, Plus, FileDown, Briefcase, Trash, RotateCcw } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useCallback } from 'react';
+import {
+  User, Plus, FileDown, Briefcase, Trash, RotateCcw,
+  Loader2, CheckCircle, Mail, Send,
+} from 'lucide-react';
 import { JobRequirement, ReviewTask } from '../types';
+import * as api from '../api';
 
 interface JobRequirementsProps {
   jobs: (JobRequirement & { _dismissedCount?: number })[];
@@ -16,7 +20,12 @@ interface JobRequirementsProps {
   reviewTasks: ReviewTask[];
   onBulkDismiss?: (jobId: string) => void;
   onRestoreDismissed?: (jobId: string) => void;
+  /** Called after the agent creates a new OUTREACH_DRAFT task so App can add it to reviewTasks state */
+  onOutreachDraftCreated?: (task: ReviewTask) => void;
 }
+
+// Per-candidate draft button state
+type DraftState = 'idle' | 'loading' | 'done';
 
 export default function JobRequirements({
   jobs,
@@ -27,6 +36,7 @@ export default function JobRequirements({
   reviewTasks,
   onBulkDismiss,
   onRestoreDismissed,
+  onOutreachDraftCreated,
 }: JobRequirementsProps) {
   const [selectedJobId, setSelectedJobId] = useState<string>(jobs[0]?.id || '');
   const [showAddJobForm, setShowAddJobForm] = useState(false);
@@ -34,16 +44,19 @@ export default function JobRequirements({
   const [newDeps, setNewDeps] = useState('Fintech Core Platform');
   const [newLoc, setNewLoc] = useState('Austin/Remote');
 
-  // B3 fix: reset selection when current job disappears from the list
+  // draftStates: candidateId → DraftState (per active job)
+  const [draftStates, setDraftStates] = useState<Record<string, DraftState>>({});
+  // bulkDraft state for footer
+  const [bulkDrafting, setBulkDrafting] = useState(false);
+  const [bulkDraftDone, setBulkDraftDone] = useState(false);
+
+  // Reset draft states when active job changes
+  useEffect(() => { setDraftStates({}); setBulkDraftDone(false); }, [selectedJobId]);
+
   useEffect(() => {
-    if (jobs.length === 0) {
-      setSelectedJobId('');
-      return;
-    }
+    if (jobs.length === 0) { setSelectedJobId(''); return; }
     const stillExists = jobs.some((j) => j.id === selectedJobId);
-    if (!stillExists) {
-      setSelectedJobId(jobs[0].id);
-    }
+    if (!stillExists) setSelectedJobId(jobs[0].id);
   }, [jobs, selectedJobId]);
 
   const filteredJobs = useMemo(() => {
@@ -60,25 +73,108 @@ export default function JobRequirements({
     });
   }, [jobs, searchQuery]);
 
-  const activeJob = useMemo(() => {
-    return jobs.find((j) => j.id === selectedJobId) || jobs[0];
-  }, [jobs, selectedJobId]);
+  const activeJob = useMemo(() => jobs.find((j) => j.id === selectedJobId) || jobs[0], [jobs, selectedJobId]);
 
   const handleCreateJob = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newTitle.trim()) return;
-    onAddJob({
-      title: newTitle.trim(),
-      department: newDeps,
-      location: newLoc,
-      status: 'MATCHING',
-      tags: ['MATCHING', 'NEW']
-    });
+    onAddJob({ title: newTitle.trim(), department: newDeps, location: newLoc, status: 'MATCHING', tags: ['MATCHING', 'NEW'] });
     setNewTitle('');
     setShowAddJobForm(false);
   };
 
+  /**
+   * Triggered by the per-row "Draft Outreach" button.
+   * If an OUTREACH_DRAFT task for this candidate already exists → jump straight
+   * to ReviewQueue.  If not → call the API to create one, then jump.
+   */
+  const handleDraftOutreach = useCallback(async (candidateId: string, candidateName: string) => {
+    if (!activeJob) return;
+
+    // Check for pre-existing task first
+    const existing = reviewTasks.find(
+      (t) => t.status === 'pending' && t.type === 'OUTREACH_DRAFT' && t.outreachDetails?.targetName === candidateName
+    );
+    if (existing) {
+      onNavigate('review');
+      onOpenReviewTask(existing.id);
+      return;
+    }
+
+    // No task yet — ask the agent to generate one
+    setDraftStates((prev) => ({ ...prev, [candidateId]: 'loading' }));
+    try {
+      const newTask = await api.createOutreachDraft(candidateId, activeJob.id, candidateName, activeJob.title);
+      onOutreachDraftCreated?.(newTask);
+      setDraftStates((prev) => ({ ...prev, [candidateId]: 'done' }));
+      setTimeout(() => {
+        onNavigate('review');
+        onOpenReviewTask(newTask.id);
+      }, 700);
+    } catch {
+      // On error (e.g. dev/demo with no backend) fall back to navigating to review
+      setDraftStates((prev) => ({ ...prev, [candidateId]: 'idle' }));
+      onNavigate('review');
+    }
+  }, [activeJob, reviewTasks, onNavigate, onOpenReviewTask, onOutreachDraftCreated]);
+
+  /**
+   * "Draft All Outreach" — fires createOutreachDraft for every active (non-pending_review)
+   * candidate in the shortlist that doesn't already have a draft task.
+   */
+  const handleBulkDraftAll = useCallback(async () => {
+    if (!activeJob?.shortlist?.length) return;
+    setBulkDrafting(true);
+    setBulkDraftDone(false);
+
+    const eligible = activeJob.shortlist.filter(
+      (c) =>
+        c.status !== 'pending_review' &&
+        !reviewTasks.some(
+          (t) => t.status === 'pending' && t.type === 'OUTREACH_DRAFT' && t.outreachDetails?.targetName === c.name
+        )
+    );
+
+    // Fire in parallel but throttle to avoid hammering
+    const results = await Promise.allSettled(
+      eligible.map((c) =>
+        api.createOutreachDraft(c.id, activeJob.id, c.name, activeJob.title).then((task) => {
+          onOutreachDraftCreated?.(task);
+          setDraftStates((prev) => ({ ...prev, [c.id]: 'done' }));
+          return task;
+        })
+      )
+    );
+
+    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
+    if (succeeded > 0) {
+      setBulkDraftDone(true);
+      setTimeout(() => {
+        setBulkDrafting(false);
+        setBulkDraftDone(false);
+        onNavigate('review');
+      }, 1400);
+    } else {
+      // All failed (no backend in demo) — still navigate
+      setBulkDrafting(false);
+      onNavigate('review');
+    }
+  }, [activeJob, reviewTasks, onNavigate, onOutreachDraftCreated]);
+
   const activeDismissedCount = (activeJob as any)?._dismissedCount ?? 0;
+
+  // Count how many active shortlist rows already have drafts or are in-progress
+  const draftableCount = useMemo(() => {
+    if (!activeJob?.shortlist?.length) return 0;
+    return activeJob.shortlist.filter(
+      (c) =>
+        c.status !== 'pending_review' &&
+        !reviewTasks.some(
+          (t) => t.status === 'pending' && t.type === 'OUTREACH_DRAFT' && t.outreachDetails?.targetName === c.name
+        ) &&
+        draftStates[c.id] !== 'done'
+    ).length;
+  }, [activeJob, reviewTasks, draftStates]);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
@@ -125,42 +221,31 @@ export default function JobRequirements({
           <div className="space-y-3 text-xs">
             <div>
               <label className="block text-slate-700 font-bold mb-1">JOB REQUIREMENT TITLE</label>
-              <input
-                id="new-job-title"
-                type="text"
-                required
+              <input id="new-job-title" type="text" required
                 placeholder="e.g. Senior Backend / Rust Engineer"
                 className="w-full px-3 py-2 border border-border-subtle rounded focus:outline-none focus:ring-1 focus:ring-slate-deep bg-white text-on-surface"
-                value={newTitle}
-                onChange={(e) => setNewTitle(e.target.value)}
-              />
+                value={newTitle} onChange={(e) => setNewTitle(e.target.value)} />
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-slate-700 font-bold mb-1">DEPARTMENT</label>
-                <input
-                  id="new-job-dept"
-                  type="text"
+                <input id="new-job-dept" type="text"
                   className="w-full px-3 py-2 border border-border-subtle rounded focus:outline-none focus:ring-1 focus:ring-slate-deep bg-white text-on-surface"
-                  value={newDeps}
-                  onChange={(e) => setNewDeps(e.target.value)}
-                />
+                  value={newDeps} onChange={(e) => setNewDeps(e.target.value)} />
               </div>
               <div>
                 <label className="block text-slate-700 font-bold mb-1">LOCATION TYPE</label>
-                <input
-                  id="new-job-location"
-                  type="text"
+                <input id="new-job-location" type="text"
                   className="w-full px-3 py-2 border border-border-subtle rounded focus:outline-none focus:ring-1 focus:ring-slate-deep bg-white text-on-surface"
-                  value={newLoc}
-                  onChange={(e) => setNewLoc(e.target.value)}
-                />
+                  value={newLoc} onChange={(e) => setNewLoc(e.target.value)} />
               </div>
             </div>
           </div>
           <div className="flex gap-2 justify-end pt-2">
-            <button id="cancel-job-form" type="button" onClick={() => setShowAddJobForm(false)} className="px-3 py-1.5 border border-border-subtle rounded text-xs hover:bg-white cursor-pointer">Cancel</button>
-            <button id="submit-job-form" type="submit" className="px-4 py-1.5 bg-slate-deep text-white rounded text-xs font-semibold hover:bg-black cursor-pointer">Confirm Deployment</button>
+            <button id="cancel-job-form" type="button" onClick={() => setShowAddJobForm(false)}
+              className="px-3 py-1.5 border border-border-subtle rounded text-xs hover:bg-white cursor-pointer">Cancel</button>
+            <button id="submit-job-form" type="submit"
+              className="px-4 py-1.5 bg-slate-deep text-white rounded text-xs font-semibold hover:bg-black cursor-pointer">Confirm Deployment</button>
           </div>
         </form>
       )}
@@ -176,7 +261,6 @@ export default function JobRequirements({
             </h3>
             <span className="text-[10px] font-mono tracking-wide bg-surface-container-high px-2 py-0.5 rounded font-bold">AUTO-REFRESH: ON</span>
           </div>
-
           <div className="flex-1 overflow-y-auto pr-2 custom-scrollbar flex flex-col gap-3">
             {filteredJobs.length === 0 ? (
               <div className="text-center py-12 text-xs text-on-surface-variant border border-dashed border-border-subtle rounded-lg">No active jobs. Click 'Create New Job' above.</div>
@@ -187,21 +271,16 @@ export default function JobRequirements({
                 const isValidating = job.status === 'VALIDATING';
                 const isArchived = job.status === 'ARCHIVED';
                 const jobDismissedCount = (job as any)._dismissedCount ?? 0;
-
                 let badgeColor = 'bg-surface-container-high text-on-surface-variant';
                 if (isMatching) badgeColor = 'bg-status-ok/10 text-status-ok border border-status-ok/20';
                 if (isValidating) badgeColor = 'bg-status-review/10 text-status-review border border-status-review/20';
                 if (isArchived) badgeColor = 'bg-status-archived/10 text-status-archived border border-status-archived/20';
-
                 return (
-                  <div
-                    id={`job-card-${job.id}`}
-                    key={job.id}
+                  <div id={`job-card-${job.id}`} key={job.id}
                     onClick={() => setSelectedJobId(job.id)}
                     className={`p-5 rounded-lg cursor-pointer transition-all ${
                       isActive ? 'bg-white border-2 border-primary shadow-xs' : 'bg-white border border-border-subtle hover:border-slate-400'
-                    }`}
-                  >
+                    }`}>
                     <div className="flex justify-between items-start mb-2 gap-2">
                       <h4 className={`text-sm font-sans font-bold leading-tight ${isActive ? 'text-primary' : 'text-on-surface'}`}>{job.title}</h4>
                       <span className={`font-mono font-bold text-[10px] uppercase px-1.5 py-0.5 rounded shrink-0 ${badgeColor}`}>{job.status}</span>
@@ -226,7 +305,6 @@ export default function JobRequirements({
 
         {/* Right: Shortlist */}
         <div className="md:col-span-8 bg-white border border-border-subtle rounded-lg flex flex-col h-full overflow-hidden shrink-0">
-
           <div className="p-6 border-b border-border-subtle bg-surface-container-lowest flex items-center justify-between">
             <div>
               <div className="flex items-center gap-2 mb-1">
@@ -249,10 +327,8 @@ export default function JobRequirements({
                   No matches synced. This role is currently processed under the initial heuristic validator sequence.
                 </p>
                 {activeDismissedCount > 0 && (
-                  <button
-                    onClick={() => activeJob && onRestoreDismissed?.(activeJob.id)}
-                    className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700 border border-amber-300 bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded transition-colors cursor-pointer"
-                  >
+                  <button onClick={() => activeJob && onRestoreDismissed?.(activeJob.id)}
+                    className="flex items-center gap-1.5 text-[11px] font-bold text-amber-700 border border-amber-300 bg-amber-50 hover:bg-amber-100 px-3 py-1.5 rounded transition-colors cursor-pointer">
                     <RotateCcw className="w-3 h-3" />
                     Restore {activeDismissedCount} hidden match{activeDismissedCount > 1 ? 'es' : ''}
                   </button>
@@ -266,7 +342,7 @@ export default function JobRequirements({
                     <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">CANDIDATE</th>
                     <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">CONFIDENCE</th>
                     <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">LLM EXPLANATION</th>
-                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">ACTIONS</th>
+                    <th className="py-3 px-4 font-sans font-bold text-[11px] text-on-surface-variant border-b border-border-subtle uppercase tracking-wider">OUTREACH</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border-subtle font-sans font-medium">
@@ -274,19 +350,22 @@ export default function JobRequirements({
                     const rankNum = String(rankIdx + 1).padStart(2, '0');
                     const isRankOne = rankIdx === 0;
                     const isActionRequired = candidate.status === 'pending_review';
+                    const draftState = draftStates[candidate.id] ?? 'idle';
+                    const alreadyHasDraft = reviewTasks.some(
+                      (t) => t.status === 'pending' && t.type === 'OUTREACH_DRAFT' && t.outreachDetails?.targetName === candidate.name
+                    );
 
                     return (
                       <tr key={candidate.id} className={`hover:bg-slate-50 transition-colors ${isActionRequired ? 'bg-status-review/5' : ''}`}>
                         <td className={`py-4 px-4 font-mono font-bold text-xs ${isRankOne ? 'text-bloodhound-crimson' : 'text-on-surface-variant'}`}>#{rankNum}</td>
-
                         <td className="py-4 px-4">
                           <div className="flex items-center gap-3">
-                            <div className={`w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 border ${isActionRequired ? 'border-status-review/50' : 'border-transparent'}`}>
-                              {isActionRequired ? (
-                                <span className="text-xs font-bold text-status-review">{candidate.initials}</span>
-                              ) : (
-                                <User className="w-4 h-4 text-on-surface-variant" />
-                              )}
+                            <div className={`w-8 h-8 rounded-full bg-surface-container-high flex items-center justify-center shrink-0 border ${
+                              isActionRequired ? 'border-status-review/50' : 'border-transparent'
+                            }`}>
+                              {isActionRequired
+                                ? <span className="text-xs font-bold text-status-review">{candidate.initials}</span>
+                                : <User className="w-4 h-4 text-on-surface-variant" />}
                             </div>
                             <div>
                               <p className="font-bold text-slate-800 leading-tight text-xs">{candidate.name}</p>
@@ -294,16 +373,18 @@ export default function JobRequirements({
                             </div>
                           </div>
                         </td>
-
                         <td className="py-4 px-4">
                           <div className="flex items-center gap-2 max-w-[130px]">
                             <div className="flex-1 bg-surface-container-high h-1.5 w-16 rounded-full overflow-hidden shrink-0">
-                              <div className={`h-full rounded-full ${isActionRequired ? 'bg-status-review' : 'bg-status-ok'}`} style={{ width: `${candidate.confidence * 100}%` }}></div>
+                              <div className={`h-full rounded-full ${
+                                isActionRequired ? 'bg-status-review' : 'bg-status-ok'
+                              }`} style={{ width: `${candidate.confidence * 100}%` }} />
                             </div>
-                            <span className={`font-mono font-bold text-xs shrink-0 ${isActionRequired ? 'text-status-review' : 'text-status-ok'}`}>{candidate.confidence.toFixed(3)}</span>
+                            <span className={`font-mono font-bold text-xs shrink-0 ${
+                              isActionRequired ? 'text-status-review' : 'text-status-ok'
+                            }`}>{candidate.confidence.toFixed(3)}</span>
                           </div>
                         </td>
-
                         <td className="py-4 px-4 max-w-xs">
                           <div className={`p-2.5 rounded border ${
                             isActionRequired
@@ -314,7 +395,8 @@ export default function JobRequirements({
                           </div>
                         </td>
 
-                        <td className="py-4 px-4">
+                        {/* Outreach / action column */}
+                        <td className="py-4 px-4 min-w-[140px]">
                           {isActionRequired ? (() => {
                             const task = reviewTasks.find(t =>
                               t.status === 'pending' && (
@@ -332,23 +414,27 @@ export default function JobRequirements({
                                 Review Queue
                               </button>
                             );
-                          })() : (() => {
-                            const task = reviewTasks.find(t =>
-                              t.status === 'pending' &&
-                              t.type === 'OUTREACH_DRAFT' &&
-                              t.outreachDetails?.targetName === candidate.name
-                            );
-                            return (
-                              <button
-                                id={`draft-outreach-${candidate.id}`}
-                                onClick={() => { onNavigate('review'); task && onOpenReviewTask(task.id); }}
-                                disabled={!task}
-                                className="bg-slate-deep hover:bg-black text-white px-3 py-1.5 rounded text-[10px] font-sans font-bold tracking-wider uppercase transition-all shrink-0 cursor-pointer disabled:opacity-50"
-                              >
-                                Draft Outreach
-                              </button>
-                            );
-                          })()}
+                          })() : (
+                            // M3: Active Draft Outreach button — creates draft task if absent
+                            <button
+                              id={`draft-outreach-${candidate.id}`}
+                              onClick={() => handleDraftOutreach(candidate.id, candidate.name)}
+                              disabled={draftState === 'loading'}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-[10px] font-bold uppercase tracking-wider transition-all cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
+                                draftState === 'done' || alreadyHasDraft
+                                  ? 'bg-status-ok/10 border border-status-ok/40 text-status-ok'
+                                  : 'bg-slate-deep hover:bg-black text-white'
+                              }`}
+                            >
+                              {draftState === 'loading' ? (
+                                <><Loader2 className="w-3 h-3 animate-spin" />Drafting…</>
+                              ) : draftState === 'done' || alreadyHasDraft ? (
+                                <><CheckCircle className="w-3 h-3" />View Draft</>
+                              ) : (
+                                <><Mail className="w-3 h-3" />Draft Outreach</>
+                              )}
+                            </button>
+                          )}
                         </td>
                       </tr>
                     );
@@ -360,7 +446,7 @@ export default function JobRequirements({
 
           {/* Bulk Actions Footer */}
           <div className="p-4 bg-surface-container-low border-t border-border-subtle flex items-center justify-between font-sans select-none shrink-0 text-xs">
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
               <span className="font-bold text-on-surface-variant uppercase tracking-wider text-[10px]">BULK ACTIONS:</span>
               <button
                 id="bulk-dismiss-low"
@@ -378,6 +464,23 @@ export default function JobRequirements({
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                   <span>Restore {activeDismissedCount} Hidden</span>
+                </button>
+              )}
+              {/* M3: Draft All Outreach — visible when there are draftable candidates */}
+              {draftableCount > 0 && (
+                <button
+                  id="bulk-draft-all-btn"
+                  onClick={handleBulkDraftAll}
+                  disabled={bulkDrafting}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-deep text-white rounded font-bold uppercase tracking-wider text-[10px] hover:bg-black transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+                >
+                  {bulkDrafting ? (
+                    <><Loader2 className="w-3 h-3 animate-spin" />Drafting all…</>
+                  ) : bulkDraftDone ? (
+                    <><CheckCircle className="w-3 h-3 text-green-400" />Drafts ready →</>
+                  ) : (
+                    <><Send className="w-3 h-3" />Draft All Outreach ({draftableCount})</>
+                  )}
                 </button>
               )}
             </div>

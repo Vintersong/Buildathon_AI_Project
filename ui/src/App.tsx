@@ -83,13 +83,16 @@ export default function App() {
     refreshAll();
   }, [refreshAll]);
 
+  // Apply dismissed filter — clamp count to IDs that still exist in shortlist (fixes B2/L3)
   const jobsWithDismissalApplied = jobs.map((job) => {
     const dismissedIds = new Set(dismissed[job.id] || []);
     if (dismissedIds.size === 0) return job;
+    const existingIds = new Set(job.shortlist.map((c) => c.id));
+    const activeDismissedCount = [...dismissedIds].filter((id) => existingIds.has(id)).length;
     return {
       ...job,
       shortlist: job.shortlist.filter((c) => !dismissedIds.has(c.id)),
-      _dismissedCount: dismissedIds.size,
+      _dismissedCount: activeDismissedCount,
     } as JobRequirement & { _dismissedCount: number };
   });
 
@@ -156,30 +159,33 @@ export default function App() {
     }
   };
 
-  // 4. Direct compliance override — persisted to disk via PATCH /api/candidates/{id}/status
+  // 4. Direct compliance override — B1 fix: capture oldStatus before optimistic update
   const handleResolveCandidateDirectly = async (
     id: string,
     newStatus: Candidate['complianceStatus']
   ) => {
-    // Optimistic update first for instant UI feedback
+    // Capture original before mutating (fixes B1 rollback)
+    const oldStatus = candidates.find((c) => c.id === id)?.complianceStatus;
+
+    // Optimistic update
     setCandidates((prev) =>
       prev.map((c) => (c.id === id ? { ...c, complianceStatus: newStatus } : c))
     );
     try {
       const updated = await api.patchCandidateStatus(id, newStatus);
-      // Replace with server-confirmed record so UI reflects ground truth
       setCandidates((prev) =>
         prev.map((c) => (c.id === updated.id ? updated : c))
       );
       triggerToast(`Compliance status updated to ${newStatus} and saved.`);
     } catch (e: unknown) {
-      // Roll back optimistic update on failure
       const msg = e instanceof Error ? e.message : String(e);
-      setCandidates((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, complianceStatus: c.complianceStatus } : c))
-      );
+      // Roll back to captured original (fixes B1)
+      if (oldStatus !== undefined) {
+        setCandidates((prev) =>
+          prev.map((c) => (c.id === id ? { ...c, complianceStatus: oldStatus } : c))
+        );
+      }
       triggerToast(`Status override failed: ${msg}`, 'error');
-      // Re-fetch to ensure UI is consistent with disk
       api.fetchCandidates().then(setCandidates).catch(() => null);
     }
   };
@@ -191,7 +197,7 @@ export default function App() {
 
     const alreadyDismissed = new Set(dismissed[jobId] || []);
     const toDismiss = job.shortlist
-      .filter((c) => c.confidence < 0.75 && c.status !== 'pending_review')
+      .filter((c) => c.confidence < 0.75 && c.status !== 'pending_review' && !alreadyDismissed.has(c.id))
       .map((c) => c.id);
 
     if (toDismiss.length === 0) {
@@ -205,7 +211,7 @@ export default function App() {
     };
     setDismissed(updated);
     saveDismissed(updated);
-    triggerToast(`${toDismiss.length} low-confidence match(es) hidden from matrix. Refresh to restore.`, 'info');
+    triggerToast(`${toDismiss.length} low-confidence match(es) hidden from matrix.`, 'info');
   };
 
   // 5b. Restore dismissed candidates for a job

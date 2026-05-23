@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { User, Plus, FileDown, Briefcase, Trash, RotateCcw } from 'lucide-react';
 import { JobRequirement, ReviewTask } from '../types';
 
@@ -33,6 +33,18 @@ export default function JobRequirements({
   const [newTitle, setNewTitle] = useState('');
   const [newDeps, setNewDeps] = useState('Fintech Core Platform');
   const [newLoc, setNewLoc] = useState('Austin/Remote');
+
+  // B3 fix: reset selection when current job disappears from the list
+  useEffect(() => {
+    if (jobs.length === 0) {
+      setSelectedJobId('');
+      return;
+    }
+    const stillExists = jobs.some((j) => j.id === selectedJobId);
+    if (!stillExists) {
+      setSelectedJobId(jobs[0].id);
+    }
+  }, [jobs, selectedJobId]);
 
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
@@ -174,7 +186,7 @@ export default function JobRequirements({
                 const isMatching = job.status === 'MATCHING';
                 const isValidating = job.status === 'VALIDATING';
                 const isArchived = job.status === 'ARCHIVED';
-                const dismissed = (job as any)._dismissedCount ?? 0;
+                const jobDismissedCount = (job as any)._dismissedCount ?? 0;
 
                 let badgeColor = 'bg-surface-container-high text-on-surface-variant';
                 if (isMatching) badgeColor = 'bg-status-ok/10 text-status-ok border border-status-ok/20';
@@ -195,8 +207,8 @@ export default function JobRequirements({
                       <span className={`font-mono font-bold text-[10px] uppercase px-1.5 py-0.5 rounded shrink-0 ${badgeColor}`}>{job.status}</span>
                     </div>
                     <p className="text-xs text-on-surface-variant font-sans mt-1">{job.department} • {job.location}</p>
-                    {dismissed > 0 && (
-                      <p className="text-[10px] font-mono text-amber-600 mt-1">{dismissed} match{dismissed > 1 ? 'es' : ''} hidden</p>
+                    {jobDismissedCount > 0 && (
+                      <p className="text-[10px] font-mono text-amber-600 mt-1">{jobDismissedCount} match{jobDismissedCount > 1 ? 'es' : ''} hidden</p>
                     )}
                     {job.tags && job.tags.length > 0 && (
                       <div className="flex gap-1.5 mt-4">

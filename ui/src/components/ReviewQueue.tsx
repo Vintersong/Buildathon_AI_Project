@@ -296,7 +296,11 @@ export default function ReviewQueue({
                           {task.complianceDetails.reason}
                         </h4>
                         <p className="text-xs text-on-surface-variant leading-relaxed">
-                          Automated scraper ingested a personal communication address for <span className="font-semibold text-slate-800">{task.complianceDetails.candidateName}</span> from a non-consensual repository mapping index. The ledger has quarantined the record.
+                          {task.complianceDetails.reason === 'missing_consent'
+                            ? <>No consent basis is recorded for <span className="font-semibold text-slate-800">{task.complianceDetails.candidateName}</span>. Upload consent proof to approve, or purge the record.</>
+                            : task.complianceDetails.reason === 'low_extraction_confidence'
+                            ? <>Extraction confidence for <span className="font-semibold text-slate-800">{task.complianceDetails.candidateName}</span> is below the required threshold. Review the extracted data and approve or purge.</>
+                            : <>A compliance flag was raised for <span className="font-semibold text-slate-800">{task.complianceDetails.candidateName}</span>: {task.complianceDetails.reason}. Review the record before proceeding.</>}
                         </p>
                         
                         <div className="bg-white border border-border-subtle p-4 font-mono text-xs text-status-error rounded block whitespace-pre overflow-x-auto select-all leading-relaxed">

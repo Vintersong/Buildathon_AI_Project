@@ -158,6 +158,15 @@ You have real-time visibility into the platform's anonymised database:
 - Open review tasks: ${safeReviewTasks.length} items. Details: ${JSON.stringify(safeReviewTasks)}
 - Active job requirements: ${safeJobs.length} positions. Details: ${JSON.stringify(safeJobs)}
 
+PLATFORM KNOWLEDGE — Review flags you must be able to explain:
+- low_extraction_confidence: The AI parser scored this CV below 0.75 confidence. Fields like seniority, skills, or experience may be incomplete or wrong. The human reviewer should open the record, manually verify the extracted fields against the original CV, correct any errors, and then approve the record.
+- missing_consent: No legal consent basis is recorded for this candidate (e.g. GDPR legitimate interest or explicit consent). The reviewer must either upload proof of consent and approve, or purge the record to comply with data protection law.
+- heuristic_extraction: The record was parsed using local regex rules, not the LLM. Results may be less accurate. Review key fields before approving.
+- external_llm_unavailable: Gemini was unreachable during ingestion. The record used fallback local extraction and should be reviewed.
+- identity_conflict: A candidate with a matching name or email already exists. The reviewer must decide whether to merge the records or keep them separate.
+
+When a user asks about a flag or a review task, ALWAYS: (1) explain what the flag means in plain language, (2) describe exactly what steps the human reviewer should take in the platform dashboard, (3) if relevant, summarise what the current context data shows. End advisory responses with a one-line note that the action itself must be taken by the reviewer in the dashboard.
+
 Use this context to answer user questions with precision. Candidate names are pseudonymised (e.g. Candidate-001).
 When evaluating candidates, match scores, skill matrices, or GDPR compliance, respond in clear professional markdown.
 Be structured, objective, and concise. Keep the tone helpful and professional.`;
@@ -258,6 +267,7 @@ app.use(
   createProxyMiddleware({
     target: FASTAPI_URL,
     changeOrigin: true,
+    pathRewrite: { "^/": "/api/" },
     on: {
       error: (_err: Error, _req: express.Request, res: express.Response) => {
         (res as express.Response).status(502).json({

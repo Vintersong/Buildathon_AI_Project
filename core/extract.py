@@ -14,15 +14,22 @@ try:
 except ImportError:
     genai = None
 
-from .config import GEMINI_API_KEY, QUARANTINE_DIR, ENABLE_EXTERNAL_LLM
+from .config import QUARANTINE_DIR, ENABLE_EXTERNAL_LLM
 from .schemas import CandidateExtraction
 from .security import anonymize_candidate_text, redact_pii
 
-# Configure Gemini
-if genai and GEMINI_API_KEY and ENABLE_EXTERNAL_LLM:
-    genai.configure(api_key=GEMINI_API_KEY)
-elif ENABLE_EXTERNAL_LLM:
+def _configure_genai() -> bool:
+    """Read env vars at call time so dotenv loading order doesn't matter."""
+    import os
+    enable = os.getenv("ENABLE_EXTERNAL_LLM", "").strip().lower() in {"1", "true", "yes", "on"}
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not enable:
+        return False
+    if genai and key:
+        genai.configure(api_key=key)
+        return True
     warnings.warn("GEMINI_API_KEY not found in environment — LLM extraction disabled.")
+    return False
 
 MODEL_NAME = "gemini-3.5-flash"
 
@@ -61,7 +68,7 @@ def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, An
     local_extraction, local_model_info = extract_candidate_data_heuristic(text)
     if not ENABLE_EXTERNAL_LLM:
         return local_extraction, local_model_info
-    if not GEMINI_API_KEY or not genai:
+    if not _configure_genai():
         local_extraction.review_flags.append("external_llm_unavailable")
         return local_extraction, local_model_info
 

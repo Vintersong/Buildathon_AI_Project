@@ -1,0 +1,59 @@
+import { Candidate, JobRequirement, ShortlistCandidate, ReviewTask, AuditEvent } from './types';
+
+const BASE = '/api';
+
+async function request<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText);
+    throw new Error(detail || `HTTP ${res.status}`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export function fetchCandidates(): Promise<Candidate[]> {
+  return request<Candidate[]>(`${BASE}/candidates`);
+}
+
+export function ingestCandidate(file: File): Promise<Candidate> {
+  const form = new FormData();
+  form.append('file', file);
+  return request<Candidate>(`${BASE}/candidates/ingest`, { method: 'POST', body: form });
+}
+
+export function fetchJobs(): Promise<JobRequirement[]> {
+  return request<JobRequirement[]>(`${BASE}/jobs`);
+}
+
+export function createJob(
+  job: Omit<JobRequirement, 'id' | 'candidatesProcessed' | 'shortlist'> & {
+    must_have?: string[];
+    nice_to_have?: string[];
+  }
+): Promise<JobRequirement> {
+  return request<JobRequirement>(`${BASE}/jobs`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(job),
+  });
+}
+
+export function runShortlist(reqId: string): Promise<ShortlistCandidate[]> {
+  return request<ShortlistCandidate[]>(`${BASE}/jobs/${reqId}/shortlist`, { method: 'POST' });
+}
+
+export function fetchReviewTasks(): Promise<ReviewTask[]> {
+  return request<ReviewTask[]>(`${BASE}/review`);
+}
+
+export function resolveTask(caseId: string, resolution: string): Promise<void> {
+  return request<void>(`${BASE}/review/${caseId}/resolve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resolution, reviewer: 'human_operator' }),
+  });
+}
+
+export function fetchAuditEvents(): Promise<AuditEvent[]> {
+  return request<AuditEvent[]>(`${BASE}/audit`);
+}

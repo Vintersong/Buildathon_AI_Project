@@ -17,7 +17,7 @@ from .compliance import record_block_reasons
 if genai and GEMINI_API_KEY and ENABLE_EXTERNAL_LLM:
     genai.configure(api_key=GEMINI_API_KEY)
 
-MODEL_NAME = "gemini-1.5-pro"
+MODEL_NAME = "gemini-3.5-flash"
 
 def get_rerank_model():
     if not genai:

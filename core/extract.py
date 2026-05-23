@@ -20,8 +20,8 @@ if genai and GEMINI_API_KEY and ENABLE_EXTERNAL_LLM:
 elif ENABLE_EXTERNAL_LLM:
     print("Warning: GEMINI_API_KEY not found in environment.")
 
-# We use gemini-1.5-flash for fast and cost-effective structured extraction
-MODEL_NAME = "gemini-1.5-flash"
+# We use gemini-3.5-flash for fast and cost-effective structured extraction
+MODEL_NAME = "gemini-3.5-flash"
 
 TECHNOLOGIES = [
     "Python", "JavaScript", "TypeScript", "Java", "C#", "C++", "Go", "Rust",

@@ -16,7 +16,7 @@ from .security import anonymize_candidate_record, rehydrate_text
 if genai and GEMINI_API_KEY and ENABLE_EXTERNAL_OUTREACH_LLM:
     genai.configure(api_key=GEMINI_API_KEY)
 
-MODEL_NAME = "gemini-1.5-flash"
+MODEL_NAME = "gemini-3.5-flash"
 
 def get_draft_model():
     if not genai:

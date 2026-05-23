@@ -56,6 +56,11 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
 
             record.scores.extraction_confidence = extraction.extraction_confidence
 
+            # Reflect actual review state in the audit event, not a hardcoded False
+            review_required = extraction.extraction_confidence < 0.75
+            if review_required:
+                record.compliance.human_review_required = True
+
             event = {
                 "event_id": f"evt_{uuid.uuid4().hex[:12]}",
                 "event_type": "bulk_refresh_update",
@@ -64,7 +69,10 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
                 "actor": {"type": "system", "tool": "maintenance_bulk_refresh"},
                 "model": model_info,
                 "changes": [{"operation": "merge", "path": "/profile", "value": "updated_from_linkedin"}],
-                "review": {"required": False},
+                "review": {
+                    "required": review_required,
+                    "reason": "low_extraction_confidence" if review_required else None,
+                },
             }
 
             save_record(record_id, record, event=event)

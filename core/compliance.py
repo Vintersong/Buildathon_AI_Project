@@ -67,6 +67,17 @@ def record_block_reasons(record: CandidateRecord, record_id: str) -> List[str]:
         reasons.append("do_not_contact_tag")
     if record.compliance.redaction_required:
         reasons.append("redaction_required")
+    # Block if retention period has legally expired
+    if record.compliance.retention_until:
+        try:
+            retention_date = datetime.fromisoformat(
+                record.compliance.retention_until.replace("Z", "+00:00")
+            )
+            if datetime.now(retention_date.tzinfo) > retention_date:
+                reasons.append("retention_expired")
+        except ValueError:
+            # Malformed date — treat as a block to be safe
+            reasons.append("retention_date_invalid")
     return reasons
 
 

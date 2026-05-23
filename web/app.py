@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import sys
 
 project_root = Path(__file__).resolve().parent.parent
@@ -39,6 +39,58 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# App config (config.json at project root)
+# ---------------------------------------------------------------------------
+
+CONFIG_PATH = project_root / "config.json"
+
+CONFIG_DEFAULTS = {
+    "model": "gemini-2.5-flash",
+    "confidence_threshold": 0.85,
+    "sovereign_cloud": False,
+}
+
+
+class AppConfig(BaseModel):
+    model: str = Field(default="gemini-2.5-flash")
+    confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    sovereign_cloud: bool = Field(default=False)
+
+
+def load_app_config() -> AppConfig:
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return AppConfig(**{**CONFIG_DEFAULTS, **data})
+    except (FileNotFoundError, json.JSONDecodeError, Exception):
+        return AppConfig(**CONFIG_DEFAULTS)
+
+
+def save_app_config(cfg: AppConfig) -> None:
+    from filelock import FileLock
+    lock = FileLock(f"{CONFIG_PATH}.lock")
+    with lock:
+        tmp = CONFIG_PATH.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg.model_dump(), f, indent=2)
+        tmp.replace(CONFIG_PATH)
+
+
+@app.get("/api/config", response_model=AppConfig)
+async def get_config():
+    return load_app_config()
+
+
+@app.post("/api/config", response_model=AppConfig)
+async def post_config(body: AppConfig):
+    try:
+        save_app_config(body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
+    return body
+
 
 # ---------------------------------------------------------------------------
 # Data mapping helpers
@@ -248,8 +300,7 @@ async def ingest_candidate(file: UploadFile = File(...)):
 
 
 class StatusPatch(BaseModel):
-    # Accepts the UI-facing complianceStatus string and maps it to record fields
-    complianceStatus: str  # "COMPLIANT" | "PENDING REVIEW" | "EXPIRING (14D)"
+    complianceStatus: str
 
 
 @app.patch("/api/candidates/{record_id}/status")
@@ -265,7 +316,6 @@ async def patch_candidate_status(record_id: str, body: StatusPatch):
     elif status == "PENDING REVIEW":
         rec.compliance.human_review_required = True
     elif status in ("EXPIRING (14D)", "EXPIRING"):
-        # Leave human_review_required as-is; just acknowledge the status
         pass
     else:
         raise HTTPException(status_code=400, detail=f"Unknown complianceStatus: '{body.complianceStatus}'")

@@ -360,56 +360,38 @@ class LinkedInReingestBody(BaseModel):
 @app.post("/api/candidates/{record_id}/reingest")
 async def reingest_candidate(
     record_id: str,
-    file: Optional[UploadFile] = File(default=None),
-    body: Optional[str] = None,
+    file: UploadFile = File(...),
 ):
     """
-    Re-ingest an existing candidate with either:
-    - A new CV file (multipart/form-data, field: file)
-    - An updated LinkedIn URL (application/json: { linkedinUrl })
-
-    File path: re-runs the full extract + merge pipeline with force=True.
-    LinkedIn path: updates identity.linkedin_url and emits a provenance event.
+    Re-ingest an existing candidate with a new CV file (multipart/form-data, field: file).
+    For LinkedIn URL updates use POST /api/candidates/:id/reingest/linkedin.
     """
     rec = load_record(record_id)
     if not rec:
         raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
 
-    # --- File re-ingest path ---
-    if file is not None and file.filename:
-        suffix = Path(file.filename).suffix.lower()
-        if suffix not in (".pdf", ".txt"):
-            raise HTTPException(status_code=400, detail="Only .pdf and .txt files are supported")
+    suffix = Path(file.filename or "upload").suffix.lower()
+    if suffix not in (".pdf", ".txt"):
+        raise HTTPException(status_code=400, detail="Only .pdf and .txt files are supported")
 
-        cvs_dir = INTAKE_DIR / "cvs"
-        cvs_dir.mkdir(parents=True, exist_ok=True)
-        dest = cvs_dir / f"reingest_{record_id}_{uuid.uuid4().hex[:6]}{suffix}"
-        try:
-            with open(dest, "wb") as f:
-                shutil.copyfileobj(file.file, f)
-            # force=True skips the hash-dedup guard so the same file can update an existing record
-            ingest_file(dest, source_type="document_update", force=True)
-        except PermissionError as e:
-            dest.unlink(missing_ok=True)
-            raise HTTPException(status_code=403, detail=str(e))
-        except Exception as e:
-            dest.unlink(missing_ok=True)
-            raise HTTPException(status_code=422, detail=str(e))
+    cvs_dir = INTAKE_DIR / "cvs"
+    cvs_dir.mkdir(parents=True, exist_ok=True)
+    dest = cvs_dir / f"reingest_{record_id}_{uuid.uuid4().hex[:6]}{suffix}"
+    try:
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        ingest_file(dest, source_type="document_update", force=True)
+    except PermissionError as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(e))
 
-        updated = load_record(record_id)
-        if not updated:
-            raise HTTPException(status_code=500, detail="Record not found after re-ingest")
-        return _map_candidate(record_id, updated)
-
-    # --- LinkedIn URL update path ---
-    # FastAPI can't parse JSON body alongside optional File in the same handler via
-    # normal Pydantic model injection, so we read the raw request body manually.
-    # The frontend sends: Content-Type: application/json  { "linkedinUrl": "..." }
-    from fastapi import Request
-    raise HTTPException(
-        status_code=400,
-        detail="No file provided. For LinkedIn URL updates use the JSON body endpoint below."
-    )
+    updated = load_record(record_id)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Record not found after re-ingest")
+    return _map_candidate(record_id, updated)
 
 
 @app.post("/api/candidates/{record_id}/reingest/linkedin")
@@ -511,6 +493,20 @@ class JobCreate(BaseModel):
 
 def _map_job(req_id: str, data: dict) -> dict:
     reqs = data.get("requirements", {})
+    # Read persisted shortlist if available
+    raw_shortlist = data.get("shortlist", [])
+    shortlist = []
+    for item in raw_shortlist:
+        rec = load_record(item.get("record_id", ""))
+        name = rec.identity.primary_name if rec else item.get("candidate_name", "")
+        shortlist.append({
+            "id": item.get("record_id", ""),
+            "name": name,
+            "confidence": item.get("match_score", 0.0),
+            "explanation": "; ".join(item.get("evidence", [])),
+            "status": "pending_review" if item.get("review_required") else "active",
+            "initials": _initials(name),
+        })
     return {
         "id": req_id,
         "title": data.get("title", ""),
@@ -518,8 +514,8 @@ def _map_job(req_id: str, data: dict) -> dict:
         "location": reqs.get("location", ""),
         "status": "MATCHING",
         "tags": reqs.get("must_have", [])[:2],
-        "candidatesProcessed": 0,
-        "shortlist": [],
+        "candidatesProcessed": data.get("shortlist_meta", {}).get("total_filtered", 0),
+        "shortlist": shortlist,
     }
 
 
@@ -555,6 +551,8 @@ async def create_job(body: JobCreate):
             "category": None,
         },
         "scoring": {},
+        "shortlist": [],
+        "shortlist_meta": {},
         "created_at": now,
         "updated_at": now,
     }
@@ -638,7 +636,6 @@ async def create_outreach_draft(body: OutreachDraftBody):
     """
     from core.outreach import generate_draft
 
-    # Guard: don't create a duplicate if one is already open for this candidate
     existing_cases = get_review_queue()
     for case in existing_cases:
         if (
@@ -656,7 +653,6 @@ async def create_outreach_draft(body: OutreachDraftBody):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Outreach generation failed: {e}")
 
-    # Reload the queue to find the freshly created case and return it mapped
     all_cases = get_review_queue()
     new_case = next((c for c in all_cases if c.get("case_id") == case_id), None)
     if not new_case:
@@ -724,8 +720,12 @@ def _extract_job_params(text: str) -> dict:
         "Python", "JavaScript", "TypeScript", "Java", "React", "Node.js", "AWS", "Go", "Rust",
         "SQL", "Kubernetes", "Docker", "FastAPI", "Django", "Vue", "Angular", "PostgreSQL",
         "MongoDB", "Machine Learning", "LLMs", "NLP", "GCP", "Azure", "C++", "C#",
+        "GDScript", "Godot", "Kotlin", "Swift", "Unity", "Unreal", "Flutter", "Dart",
+        "Redis", "Elasticsearch", "GraphQL", "Terraform", "Ansible", "Spark", "Kafka",
     ]
     found = [s for s in known_skills if re.search(r"\b" + re.escape(s) + r"\b", text, re.IGNORECASE)]
+    if not found:
+        print(f"[chat] Regex skill extraction found no matches for: {text[:80]!r}")
     params["must_have"] = list(dict.fromkeys(found))
     return params
 
@@ -743,7 +743,7 @@ def _format_jobs_list(jobs: list, query: str = "") -> str:
     ] or jobs
     lines = [f"Found **{len(filtered)} job(s)**:\n"]
     for j in filtered[:10]:
-        lines.append(f"- **{j.get('title')}** — {j.get('department', '')} • {j.get('location', '')} `{j.get('status', 'MATCHING')}`")
+        lines.append(f"- **{j.get('title')}** — {j.get('department', '')} \u2022 {j.get('location', '')} `{j.get('status', 'MATCHING')}`")
     return "\n".join(lines)
 
 
@@ -781,10 +781,10 @@ async def gemini_chat(body: _GeminiChatBody):
             f"System status: {len(candidates)} candidates, {len(jobs)} jobs, {pending_count} pending compliance reviews.\n"
             f"Active jobs: {', '.join(j.get('title','') for j in jobs[:6]) or 'none'}.\n\n"
             f"Capabilities:\n"
-            f"1. CREATE JOBS — if user wants to create/add a job, include this marker on its own line before your explanation:\n"
+            f"1. CREATE JOBS \u2014 if user wants to create/add a job, include this marker on its own line before your explanation:\n"
             f'   [ACTION:CREATE_JOB] {{"title":"...","department":"...","location":"...","must_have":["..."],"nice_to_have":["..."]}}\n'
-            f"2. SEARCH JOBS — list matching jobs from the active list above.\n"
-            f"3. GENERAL — answer questions about candidates, compliance, GDPR, outreach.\n\n"
+            f"2. SEARCH JOBS \u2014 list matching jobs from the active list above.\n"
+            f"3. GENERAL \u2014 answer questions about candidates, compliance, GDPR, outreach.\n\n"
             f"Be concise and professional."
         )
 
@@ -871,7 +871,7 @@ async def gemini_chat(body: _GeminiChatBody):
             if pending_tasks:
                 lines = [f"**{len(pending_tasks)} pending compliance task(s):**\n"]
                 for t in pending_tasks[:5]:
-                    lines.append(f"- `{t.get('id','')[:8]}` — {t.get('type','UNKNOWN').replace('_',' ')}")
+                    lines.append(f"- `{t.get('id','')[:8]}` \u2014 {t.get('type','UNKNOWN').replace('_',' ')}")
                 response_text = "\n".join(lines)
             else:
                 response_text = "No pending compliance tasks. The candidate pool is fully compliant."

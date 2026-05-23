@@ -133,7 +133,9 @@ def score_structured(candidates: List[str], req: RequirementRecord) -> Dict[str,
             cand_langs = {lang.lower() for lang in (rec.profile.languages_spoken or [])}
             lang_score = 1.0 if req_languages & cand_langs else 0.0
 
-        freshness = 0.5 if rec.state.stale else 1.0
+        # Bug fix: guard against missing state field on older records
+        state = getattr(rec, "state", None)
+        freshness = 0.5 if (state and getattr(state, "stale", False)) else 1.0
 
         scores[c_id] = {
             "experience": exp_score,
@@ -142,6 +144,24 @@ def score_structured(candidates: List[str], req: RequirementRecord) -> Dict[str,
             "freshness": freshness,
         }
     return scores
+
+
+def persist_shortlist(req_id: str, shortlist: list, meta: dict) -> None:
+    """Write shortlist results back into the requirement JSON for persistence across reloads."""
+    path = (REQUIREMENTS_DIR / f"{req_id}.json").resolve()
+    if not path.exists():
+        return
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["shortlist"] = shortlist
+        data["shortlist_meta"] = meta
+        tmp = path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        tmp.replace(path)
+    except Exception as e:
+        print(f"[match] Failed to persist shortlist for {req_id}: {e}")
 
 
 def generate_shortlist(
@@ -161,6 +181,9 @@ def generate_shortlist(
     Keywords are retained as evidence metadata shown to the recruiter
     but are NOT used as a ranking signal, so semantically equivalent
     skills (Python ↔ GDScript, etc.) are never penalised.
+
+    Results are persisted back to the requirement JSON so GET /api/jobs
+    can return a populated shortlist without re-running the pipeline.
     """
     req = _load_requirement(req_id)
     all_candidates = _get_all_active_candidates()
@@ -177,8 +200,6 @@ def generate_shortlist(
     struct_scores = score_structured(filtered, req)
 
     # Combine: embedding score * freshness multiplier
-    # (location + language already enforced as hard filters in stage 1
-    #  when specified; here they're soft signals for ranking only)
     combined = []
     for c_id in filtered:
         s_emb = emb_scores.get(c_id, 0.0)
@@ -189,7 +210,7 @@ def generate_shortlist(
 
     combined.sort(key=lambda x: x[1], reverse=True)
 
-    # Keyword overlap is computed for evidence metadata only — not for ranking
+    # Keyword overlap computed for evidence metadata only — not for ranking
     req_skills = set(s.lower() for s in req.requirements.must_have + req.requirements.nice_to_have)
 
     def _keyword_evidence(rec: CandidateRecord) -> list[str]:
@@ -253,11 +274,19 @@ def generate_shortlist(
         })
 
     shortlist.sort(key=lambda x: x["match_score"], reverse=True)
+    final_shortlist = shortlist[:top_n]
 
-    return {
-        "job_id": req_id,
-        "shortlist": shortlist[:top_n],
+    meta = {
         "funnel_size": len(funnel),
         "total_filtered": len(filtered),
         "generated_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+    # Persist results so GET /api/jobs returns populated shortlist after reload
+    persist_shortlist(req_id, final_shortlist, meta)
+
+    return {
+        "job_id": req_id,
+        "shortlist": final_shortlist,
+        **meta,
     }

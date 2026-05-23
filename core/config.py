@@ -47,6 +47,11 @@ MANIFEST_PATH = INDEXES_DIR / "manifest.json"
 # API Keys
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
+# LM Studio (local inference server)
+LM_STUDIO_URL = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "gemma-4b")
+ENABLE_LOCAL_LLM = _env_bool("ENABLE_LOCAL_LLM", False)
+
 # Security/compliance defaults
 APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
 ENABLE_EXTERNAL_LLM = _env_bool("ENABLE_EXTERNAL_LLM", False)

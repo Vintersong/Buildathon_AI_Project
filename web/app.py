@@ -490,36 +490,41 @@ async def gemini_chat(body: _GeminiChatBody):
 
     response_text = ""
 
-    # --- LLM path ---
-    from core.extract import _configure_genai, MODEL_NAME
-    llm_ok = _configure_genai()
+    # --- LLM path: LM Studio (local) takes priority over Gemini ---
+    from core.extract import _configure_genai, _lm_studio_available, _lm_studio_chat, MODEL_NAME
+    use_lm_studio = _lm_studio_available()
+    llm_ok = use_lm_studio or _configure_genai()
 
     if llm_ok:
+        system_prompt = (
+            f"You are the Bloodhound AI Copilot for a recruitment intelligence platform.\n\n"
+            f"System status: {len(candidates)} candidates, {len(jobs)} jobs, {pending_count} pending compliance reviews.\n"
+            f"Active jobs: {', '.join(j.get('title','') for j in jobs[:6]) or 'none'}.\n\n"
+            f"Capabilities:\n"
+            f"1. CREATE JOBS — if user wants to create/add a job, include this marker on its own line before your explanation:\n"
+            f'   [ACTION:CREATE_JOB] {{"title":"...","department":"...","location":"...","must_have":["..."],"nice_to_have":["..."]}}\n'
+            f"2. SEARCH JOBS — list matching jobs from the active list above.\n"
+            f"3. GENERAL — answer questions about candidates, compliance, GDPR, outreach.\n\n"
+            f"Be concise and professional."
+        )
+
         try:
-            import google.generativeai as genai_module
+            if use_lm_studio:
+                lm_messages = [{"role": "system", "content": system_prompt}]
+                for msg in messages:
+                    lm_messages.append({"role": msg["role"], "content": msg["content"]})
+                response_text = _lm_studio_chat(lm_messages)
+            else:
+                import google.generativeai as genai_module
+                history = []
+                for msg in messages[:-1]:
+                    history.append({"role": "user" if msg["role"] == "user" else "model", "parts": [{"text": msg["content"]}]})
+                model = genai_module.GenerativeModel(model_name=MODEL_NAME, system_instruction=system_prompt)
+                chat_session = model.start_chat(history=history)
+                resp = chat_session.send_message(last_user_msg)
+                response_text = resp.text
 
-            system = f"""You are the Bloodhound AI Copilot for a recruitment intelligence platform.
-
-System status: {len(candidates)} candidates, {len(jobs)} jobs, {pending_count} pending compliance reviews.
-Active jobs: {', '.join(j.get('title','') for j in jobs[:6]) or 'none'}.
-
-Capabilities:
-1. CREATE JOBS — if user wants to create/add a job, include this marker on its own line before your explanation:
-   [ACTION:CREATE_JOB] {{"title":"...","department":"...","location":"...","must_have":["..."],"nice_to_have":["..."]}}
-2. SEARCH JOBS — list matching jobs from the active list above.
-3. GENERAL — answer questions about candidates, compliance, GDPR, outreach.
-
-Be concise and professional."""
-
-            history = []
-            for msg in messages[:-1]:
-                history.append({"role": "user" if msg["role"] == "user" else "model", "parts": [{"text": msg["content"]}]})
-
-            model = genai_module.GenerativeModel(model_name=MODEL_NAME, system_instruction=system)
-            chat_session = model.start_chat(history=history)
-            resp = chat_session.send_message(last_user_msg)
-            response_text = resp.text
-
+            # Parse any action markers the model emitted
             action_m = re.search(r'\[ACTION:CREATE_JOB\]\s*(\{[^\n]+\})', response_text)
             if action_m:
                 try:
@@ -536,11 +541,18 @@ Be concise and professional."""
                     response_text = re.sub(r'\[ACTION:CREATE_JOB\]\s*\{[^\n]+\}\n?', '', response_text).strip()
                 except Exception:
                     pass
-        except Exception as exc:
-            response_text = f"Agent error: {exc}"
 
-    # --- Fallback path (no LLM) ---
-    else:
+        except Exception as exc:
+            err = str(exc)
+            if any(k in err.lower() for k in ("429", "quota", "rate", "exhausted")):
+                # Gemini quota hit — fall through to rule-based handler below
+                llm_ok = False
+                response_text = ""
+            else:
+                response_text = f"Agent error: {exc}"
+
+    # --- Fallback path (no LLM, or LLM quota-exhausted above) ---
+    if not response_text:
         if create_intent:
             params = _extract_job_params(last_user_msg)
             if params["title"]:

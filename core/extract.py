@@ -14,7 +14,7 @@ try:
 except ImportError:
     genai = None
 
-from .config import QUARANTINE_DIR, ENABLE_EXTERNAL_LLM
+from .config import QUARANTINE_DIR, ENABLE_EXTERNAL_LLM, ENABLE_LOCAL_LLM, LM_STUDIO_URL, LM_STUDIO_MODEL
 from .schemas import CandidateExtraction
 from .security import anonymize_candidate_text, redact_pii
 
@@ -32,6 +32,107 @@ def _configure_genai() -> bool:
     return False
 
 MODEL_NAME = "gemini-3.5-flash"
+
+
+# ---------------------------------------------------------------------------
+# LM Studio (local, OpenAI-compatible)
+# ---------------------------------------------------------------------------
+
+def _lm_studio_available() -> bool:
+    if not ENABLE_LOCAL_LLM:
+        return False
+    import urllib.request
+    try:
+        urllib.request.urlopen(f"{LM_STUDIO_URL}/models", timeout=2)
+        return True
+    except Exception:
+        return False
+
+
+def _lm_studio_chat(messages: list[dict], temperature: float = 0.1, max_tokens: int = 2048) -> str:
+    """Call LM Studio's OpenAI-compatible /chat/completions endpoint."""
+    import urllib.request as _req
+    import urllib.error
+    payload = json.dumps({
+        "model": LM_STUDIO_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }).encode()
+    request = _req.Request(
+        f"{LM_STUDIO_URL}/chat/completions",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with _req.urlopen(request, timeout=60) as resp:
+        data = json.loads(resp.read())
+    return data["choices"][0]["message"]["content"]
+
+
+_LM_EXTRACT_SYSTEM = (
+    "You are a precise HR data extraction assistant. "
+    "Extract candidate information from resume text and return ONLY valid JSON — no markdown, no explanation. "
+    "Use null for missing fields. Confidence is 0.0–1.0."
+)
+
+_LM_EXTRACT_SCHEMA = """{
+  "name": "string or null",
+  "seniority": "Senior|Mid|Junior|Lead|Principal|Intern or null",
+  "years_of_experience": "integer or null",
+  "technologies_used": ["list of technology strings"],
+  "languages_spoken": ["list of language strings"],
+  "study_degrees": ["list of degree strings"],
+  "location": "string or null",
+  "previous_jobs": ["list of job title strings"],
+  "summary": "one or two sentence summary or null",
+  "extraction_confidence": "float 0.0-1.0"
+}"""
+
+
+def _extract_with_lm_studio(text: str) -> Tuple[CandidateExtraction, Dict[str, Any]]:
+    """Use local LM Studio to enhance heuristic extraction."""
+    local_extraction, local_model_info = extract_candidate_data_heuristic(text)
+
+    prompt = (
+        f"Extract candidate profile from the resume below.\n"
+        f"Return ONLY JSON matching this schema:\n{_LM_EXTRACT_SCHEMA}\n\n"
+        f"Resume:\n{text[:4000]}\n\nJSON:"
+    )
+    raw = _lm_studio_chat(
+        [{"role": "system", "content": _LM_EXTRACT_SYSTEM}, {"role": "user", "content": prompt}]
+    )
+
+    # Strip markdown fences if model wraps the output
+    raw = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+    raw = re.sub(r"\s*```$", "", raw.strip())
+
+    parsed = json.loads(raw)
+    extraction = CandidateExtraction(
+        name=local_extraction.name,
+        emails=local_extraction.emails,
+        phones=local_extraction.phones,
+        linkedin_url=local_extraction.linkedin_url,
+        seniority=parsed.get("seniority") or local_extraction.seniority,
+        years_of_experience=parsed.get("years_of_experience") or local_extraction.years_of_experience,
+        technologies_used=parsed.get("technologies_used") or local_extraction.technologies_used,
+        languages_spoken=parsed.get("languages_spoken") or local_extraction.languages_spoken,
+        study_degrees=parsed.get("study_degrees") or local_extraction.study_degrees,
+        location=parsed.get("location") or local_extraction.location,
+        previous_jobs=parsed.get("previous_jobs") or local_extraction.previous_jobs,
+        projects_developed=local_extraction.projects_developed,
+        summary=parsed.get("summary") or local_extraction.summary,
+        extraction_confidence=float(parsed.get("extraction_confidence", 0.75)),
+        review_flags=["lm_studio_extraction"],
+    )
+    provenance = {
+        "provider": "lm_studio",
+        "model": LM_STUDIO_MODEL,
+        "schema": "CandidateExtraction_v1",
+        "external": False,
+        "url": LM_STUDIO_URL,
+    }
+    return extraction, provenance
 
 TECHNOLOGIES = [
     "Python", "JavaScript", "TypeScript", "Java", "C#", "C++", "Go", "Rust",
@@ -61,11 +162,21 @@ def get_extraction_model():
 
 def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, Any]]:
     """
-    Extract structured candidate data from raw text using Gemini.
-    Returns the parsed CandidateExtraction object and model provenance info.
-    Raises ValueError if extraction fails or validation fails.
+    Extract structured candidate data from raw text.
+    Priority: LM Studio (local) → Gemini (external) → heuristic fallback.
+    Never raises on transient API errors — always returns at minimum the heuristic result.
     """
     local_extraction, local_model_info = extract_candidate_data_heuristic(text)
+
+    # 1. Try local LM Studio first (private, no quota limits)
+    if _lm_studio_available():
+        try:
+            return _extract_with_lm_studio(text)
+        except Exception as e:
+            logger.warning("LM Studio extraction failed, trying next provider: %s", e)
+            local_extraction.review_flags.append("lm_studio_fallback")
+
+    # 2. Try Gemini if enabled
     if not ENABLE_EXTERNAL_LLM:
         return local_extraction, local_model_info
     if not _configure_genai():
@@ -75,9 +186,8 @@ def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, An
     model = get_extraction_model()
     response = None
     anonymized = anonymize_candidate_text(text, candidate_id="candidate")
-    
+
     try:
-        # Request JSON output matching the CandidateExtraction schema
         response = model.generate_content(
             "Extract candidate profile from the following anonymized text. "
             "Do not infer names, emails, phone numbers, LinkedIn URLs, or other direct identifiers; "
@@ -88,20 +198,18 @@ def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, An
                 response_schema=CandidateExtraction
             )
         )
-        
+
         raw_json = response.text
         parsed_dict = json.loads(raw_json)
-        
-        # Validate against schema
+
         extraction = CandidateExtraction(**parsed_dict)
         extraction.name = local_extraction.name
         extraction.emails = local_extraction.emails
         extraction.phones = local_extraction.phones
         extraction.linkedin_url = local_extraction.linkedin_url
         extraction.review_flags = list(dict.fromkeys(extraction.review_flags + ["external_anonymized_extraction"]))
-        
-        # Build provenance info
-        provenance_model_info = {
+
+        return extraction, {
             "provider": "google",
             "model": MODEL_NAME,
             "schema": "CandidateExtraction_v1",
@@ -109,17 +217,27 @@ def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, An
             "anonymized": True,
             "redacted_types": anonymized.redacted_types,
         }
-        
-        return extraction, provenance_model_info
-        
+
     except json.JSONDecodeError as e:
         _quarantine_failed_output(anonymized.anonymized_text, getattr(response, 'text', ''), "json_decode_error")
-        raise ValueError(f"Failed to parse LLM response as JSON: {str(e)}")
+        logger.warning("Gemini JSON decode failed, falling back to heuristic: %s", e)
+        local_extraction.review_flags.append("llm_json_error_fallback")
+        return local_extraction, local_model_info
+
     except ValidationError as e:
         _quarantine_failed_output(anonymized.anonymized_text, getattr(response, 'text', ''), "schema_validation_error")
-        raise ValueError(f"Extracted JSON did not match required schema: {str(e)}")
+        logger.warning("Gemini schema validation failed, falling back to heuristic: %s", e)
+        local_extraction.review_flags.append("llm_schema_error_fallback")
+        return local_extraction, local_model_info
+
     except Exception as e:
-        raise ValueError(f"Extraction failed: {str(e)}")
+        err_str = str(e)
+        # Rate-limit / quota exhausted — degrade gracefully
+        if any(k in err_str.lower() for k in ("429", "quota", "rate", "exhausted", "resource_exhausted")):
+            logger.warning("Gemini quota/rate-limit hit, falling back to heuristic: %s", err_str[:200])
+            local_extraction.review_flags.append("llm_quota_fallback")
+            return local_extraction, local_model_info
+        raise ValueError(f"Extraction failed: {err_str}")
 
 def extract_candidate_data_heuristic(text: str) -> Tuple[CandidateExtraction, Dict[str, Any]]:
     """Deterministic offline extraction used by default to avoid data exfiltration."""

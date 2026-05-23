@@ -1,4 +1,4 @@
-import { Candidate, JobRequirement, ShortlistCandidate, ReviewTask, AuditEvent } from './types';
+import { Candidate, CandidateDetail, JobRequirement, ShortlistCandidate, ReviewTask, AuditEvent } from './types';
 
 const BASE = '/api';
 
@@ -13,6 +13,10 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function fetchCandidates(): Promise<Candidate[]> {
   return request<Candidate[]>(`${BASE}/candidates`);
+}
+
+export function fetchCandidateDetail(id: string): Promise<CandidateDetail> {
+  return request<CandidateDetail>(`${BASE}/candidates/${id}`);
 }
 
 export function ingestCandidate(file: File): Promise<Candidate> {

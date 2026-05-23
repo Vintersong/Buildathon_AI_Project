@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo } from 'react';
-import { GitMerge, Gavel, Mail, Check, X, ShieldAlert, Sparkles, AlertCircle, Info, ExternalLink, RefreshCw, Terminal } from 'lucide-react';
-import { ReviewTask } from '../types';
+import { useState, useMemo, useEffect } from 'react';
+import { GitMerge, Gavel, Mail, Check, X, Info, ExternalLink, Terminal } from 'lucide-react';
+import { ReviewTask, AuditEvent } from '../types';
 
 interface ReviewQueueProps {
   tasks: ReviewTask[];
@@ -13,6 +13,7 @@ interface ReviewQueueProps {
   focusedTaskId?: string;
   onClearFocus: () => void;
   onNavigate: (screen: 'candidates' | 'jobs' | 'review' | 'audit' | 'settings') => void;
+  auditEvents?: AuditEvent[];
 }
 
 export default function ReviewQueue({
@@ -20,45 +21,40 @@ export default function ReviewQueue({
   onResolveTask,
   focusedTaskId,
   onClearFocus,
-  onNavigate
+  onNavigate,
+  auditEvents = [],
 }: ReviewQueueProps) {
-  // Navigation tabs for Categories
   const [activeTab, setActiveTab] = useState<'identity' | 'outreach' | 'compliance'>('identity');
 
-  // Automatically switch tab if focused audit task demands it
-  useMemo(() => {
+  // B3 fix: side-effects belong in useEffect, not useMemo
+  useEffect(() => {
     if (focusedTaskId) {
       const task = tasks.find((t) => t.id === focusedTaskId);
       if (task) {
         if (task.type === 'IDENTITY_CONFLICT') setActiveTab('identity');
-        if (task.type === 'OUTREACH_DRAFT') setActiveTab('outreach');
-        if (task.type === 'COMPLIANCE_FLAG') setActiveTab('compliance');
+        else if (task.type === 'OUTREACH_DRAFT') setActiveTab('outreach');
+        else if (task.type === 'COMPLIANCE_FLAG') setActiveTab('compliance');
       }
     }
   }, [focusedTaskId, tasks]);
 
-  // Compute tasks for each category
   const filteredTasks = useMemo(() => {
     return tasks.filter((t) => {
-      // Filter out resolved tasks for dynamic completeness, but keep resolved ones with matching badge if we want
       if (t.status !== 'pending') return false;
-
       if (activeTab === 'identity') return t.type === 'IDENTITY_CONFLICT';
       if (activeTab === 'outreach') return t.type === 'OUTREACH_DRAFT';
       return t.type === 'COMPLIANCE_FLAG';
     });
   }, [tasks, activeTab]);
 
-  const counts = useMemo(() => {
-    const identCount = tasks.filter((t) => t.type === 'IDENTITY_CONFLICT' && t.status === 'pending').length;
-    const outreachCount = tasks.filter((t) => t.type === 'OUTREACH_DRAFT' && t.status === 'pending').length;
-    const compliCount = tasks.filter((t) => t.type === 'COMPLIANCE_FLAG' && t.status === 'pending').length;
-    return {
-      identity: identCount,
-      outreach: outreachCount,
-      compliance: compliCount
-    };
-  }, [tasks]);
+  const counts = useMemo(() => ({
+    identity: tasks.filter((t) => t.type === 'IDENTITY_CONFLICT' && t.status === 'pending').length,
+    outreach: tasks.filter((t) => t.type === 'OUTREACH_DRAFT' && t.status === 'pending').length,
+    compliance: tasks.filter((t) => t.type === 'COMPLIANCE_FLAG' && t.status === 'pending').length,
+  }), [tasks]);
+
+  // B4 fix: derive live trail from real auditEvents prop (last 3)
+  const liveTrail = auditEvents.slice(-3);
 
   return (
     <div className="space-y-8 animate-in fade-in duration-300">
@@ -88,42 +84,27 @@ export default function ReviewQueue({
       <div className="flex gap-8 border-b border-border-subtle overflow-x-auto pb-0 select-none font-sans text-sm font-semibold">
         <button
           id="tab-identity-btn"
-          onClick={() => {
-            setActiveTab('identity');
-            onClearFocus();
-          }}
+          onClick={() => { setActiveTab('identity'); onClearFocus(); }}
           className={`pb-4 px-1 border-b-2 whitespace-nowrap cursor-pointer transition-colors ${
-            activeTab === 'identity'
-              ? 'border-primary text-primary font-bold'
-              : 'border-transparent text-on-surface-variant hover:text-primary'
+            activeTab === 'identity' ? 'border-primary text-primary font-bold' : 'border-transparent text-on-surface-variant hover:text-primary'
           }`}
         >
           Identity Conflicts ({counts.identity})
         </button>
         <button
           id="tab-outreach-btn"
-          onClick={() => {
-            setActiveTab('outreach');
-            onClearFocus();
-          }}
+          onClick={() => { setActiveTab('outreach'); onClearFocus(); }}
           className={`pb-4 px-1 border-b-2 whitespace-nowrap cursor-pointer transition-colors ${
-            activeTab === 'outreach'
-              ? 'border-primary text-primary font-bold'
-              : 'border-transparent text-on-surface-variant hover:text-primary'
+            activeTab === 'outreach' ? 'border-primary text-primary font-bold' : 'border-transparent text-on-surface-variant hover:text-primary'
           }`}
         >
           Pending Outreach Drafts ({counts.outreach})
         </button>
         <button
           id="tab-compliance-btn"
-          onClick={() => {
-            setActiveTab('compliance');
-            onClearFocus();
-          }}
+          onClick={() => { setActiveTab('compliance'); onClearFocus(); }}
           className={`pb-4 px-1 border-b-2 whitespace-nowrap cursor-pointer transition-colors ${
-            activeTab === 'compliance'
-              ? 'border-primary text-primary font-bold'
-              : 'border-transparent text-on-surface-variant hover:text-primary'
+            activeTab === 'compliance' ? 'border-primary text-primary font-bold' : 'border-transparent text-on-surface-variant hover:text-primary'
           }`}
         >
           Compliance Flags ({counts.compliance})
@@ -132,8 +113,6 @@ export default function ReviewQueue({
 
       {/* Main interactive Tasks container */}
       <div className="space-y-8">
-        
-        {/* If focused highlights on top or filteredTasks empty */}
         {filteredTasks.length === 0 ? (
           <div className="p-12 text-center border border-dashed border-border-subtle rounded-lg bg-surface min-h-[300px] flex flex-col items-center justify-center space-y-4 font-sans">
             <Check className="w-12 h-12 text-status-ok bg-green-50 p-2.5 rounded-full" />
@@ -154,7 +133,6 @@ export default function ReviewQueue({
                   isHighlighted ? 'ring-2 ring-primary border-primary shadow-md' : 'border-border-subtle'
                 }`}
               >
-                {/* Visual Alert banner for highlighted focused routing */}
                 {isHighlighted && (
                   <div className="bg-primary text-white text-[10px] font-mono py-1.5 px-6 uppercase tracking-wider font-semibold flex items-center justify-between">
                     <span>⚡ Highlighted Context Triggered from Core Match Matrix</span>
@@ -180,13 +158,10 @@ export default function ReviewQueue({
                   </div>
                 </div>
 
-                {/* CARD BODY: RENDERS CUSTOM LAYOUT BASED ON TASK TYPE */}
-
-                {/* Type A: IDENTITY_CONFLICT SPLIT VIEW */}
+                {/* Type A: IDENTITY_CONFLICT */}
                 {task.type === 'IDENTITY_CONFLICT' && task.existingRecord && task.proposedRecord && (
                   <div>
                     <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-border-subtle h-auto md:h-[320px] bg-white">
-                      {/* Left: Source record */}
                       <div className="p-6 overflow-y-auto custom-scrollbar">
                         <div className="mb-4 flex justify-between items-center select-none">
                           <h4 className="text-[11px] font-mono uppercase font-bold text-on-surface-variant">EXISTING RECORD (A)</h4>
@@ -215,7 +190,6 @@ export default function ReviewQueue({
                         </div>
                       </div>
 
-                      {/* Right: Proposed record updates */}
                       <div className="p-6 overflow-y-auto bg-surface-container-low custom-scrollbar">
                         <div className="mb-4 flex justify-between items-center select-none">
                           <h4 className="text-[11px] font-mono uppercase font-bold text-on-surface-variant">PROPOSED RECORD (B)</h4>
@@ -226,7 +200,6 @@ export default function ReviewQueue({
                             <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">NAME</span>
                             <p className="text-slate-900 font-bold text-sm">{task.proposedRecord.name}</p>
                           </div>
-                          
                           <div className="flex flex-col gap-1">
                             <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">UPDATED ROLE DIFF</span>
                             <p className="bg-green-50 text-status-ok border-l-2 border-status-ok px-2 py-1 flex items-center gap-1 text-[11px] leading-tight select-none">
@@ -238,14 +211,12 @@ export default function ReviewQueue({
                               <span>{task.proposedRecord.removedRole}</span>
                             </p>
                           </div>
-
                           <div className="flex flex-col gap-1">
                             <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">LOCATION DIFF</span>
                             <p className="bg-green-50 text-status-ok border-l-2 border-status-ok px-2 py-1 text-[11px]">
                               + {task.proposedRecord.location}
                             </p>
                           </div>
-
                           <div className="flex flex-col gap-0.5">
                             <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">LINKEDIN PROVENANCE</span>
                             <p className="text-on-surface bg-white/50 border border-border-subtle p-1 px-2 rounded font-mono text-[11px] inline-block">
@@ -256,7 +227,6 @@ export default function ReviewQueue({
                       </div>
                     </div>
 
-                    {/* Left & Right split actions row footer */}
                     <div className="px-6 py-4 bg-white border-t border-border-subtle flex flex-col sm:flex-row justify-between sm:items-center gap-4 font-sans text-xs">
                       <div className="flex items-center gap-2 select-none">
                         <Info className="w-4 h-4 text-status-review shrink-0" />
@@ -285,12 +255,10 @@ export default function ReviewQueue({
                   </div>
                 )}
 
-                {/* Type B: COMPLIANCE_FLAG DETAIL STATE */}
+                {/* Type B: COMPLIANCE_FLAG */}
                 {task.type === 'COMPLIANCE_FLAG' && task.complianceDetails && (
                   <div className="p-6 bg-status-error/5 border-l-4 border-l-status-error font-sans text-sm">
                     <div className="flex flex-col md:flex-row gap-6">
-                      
-                      {/* Left Side: Flag diagnostic details */}
                       <div className="flex-1 space-y-4">
                         <h4 className="font-bold text-slate-900 font-sans text-base">
                           {task.complianceDetails.reason}
@@ -302,13 +270,11 @@ export default function ReviewQueue({
                             ? <>Extraction confidence for <span className="font-semibold text-slate-800">{task.complianceDetails.candidateName}</span> is below the required threshold. Review the extracted data and approve or purge.</>
                             : <>A compliance flag was raised for <span className="font-semibold text-slate-800">{task.complianceDetails.candidateName}</span>: {task.complianceDetails.reason}. Review the record before proceeding.</>}
                         </p>
-                        
                         <div className="bg-white border border-border-subtle p-4 font-mono text-xs text-status-error rounded block whitespace-pre overflow-x-auto select-all leading-relaxed">
                           {task.complianceDetails.details}
                         </div>
                       </div>
 
-                      {/* Right side: Quarantine controls and blur mock */}
                       <div className="w-full md:w-72 bg-white border border-border-subtle p-5 rounded-md flex flex-col justify-between">
                         <div>
                           <span className="block text-[10px] font-bold text-on-surface-variant font-mono uppercase tracking-wider mb-2">
@@ -318,7 +284,6 @@ export default function ReviewQueue({
                             {task.complianceDetails.quarantineValue}
                           </div>
                         </div>
-
                         <div className="space-y-3.5 mt-8">
                           <button
                             id={`purge-compliance-${task.id}`}
@@ -337,17 +302,14 @@ export default function ReviewQueue({
                           </button>
                         </div>
                       </div>
-
                     </div>
                   </div>
                 )}
 
-                {/* Type C: OUTREACH_DRAFT GENERATED OUTLOOK */}
+                {/* Type C: OUTREACH_DRAFT */}
                 {task.type === 'OUTREACH_DRAFT' && task.outreachDetails && (
                   <div className="p-6 font-sans">
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                      
-                      {/* Left: draft body context */}
                       <div className="md:col-span-2 space-y-3 font-sans">
                         <label className="block text-[10px] font-bold font-mono tracking-wider text-on-surface-variant uppercase">
                           AI-GENERATED PERSUASION OUTREACH (DRAFT V2)
@@ -357,7 +319,6 @@ export default function ReviewQueue({
                         </div>
                       </div>
 
-                      {/* Right: triggers information metadata */}
                       <div className="space-y-6 flex flex-col justify-between">
                         <div>
                           <label className="block text-[10px] font-bold font-mono tracking-wider text-on-surface-variant uppercase mb-3">
@@ -372,7 +333,6 @@ export default function ReviewQueue({
                             ))}
                           </ul>
                         </div>
-
                         <div className="space-y-3">
                           <button
                             id={`send-outreach-${task.id}`}
@@ -391,7 +351,6 @@ export default function ReviewQueue({
                           </button>
                         </div>
                       </div>
-
                     </div>
                   </div>
                 )}
@@ -400,18 +359,17 @@ export default function ReviewQueue({
             );
           })
         )}
-
       </div>
 
-      {/* Live Audit Log Stream trails at bottom */}
+      {/* B4 fix: Live Audit Log Stream — driven by real auditEvents prop */}
       <section className="border-t border-border-subtle pt-12 pb-8">
         <div className="flex justify-between items-center mb-6 select-none font-sans">
           <div className="flex items-center gap-2">
             <Terminal className="w-5 h-5 text-on-surface-variant" />
             <h3 className="font-sans font-bold text-sm text-primary">Live Review Session Trail</h3>
           </div>
-          <button 
-            onClick={() => onNavigate('audit')} 
+          <button
+            onClick={() => onNavigate('audit')}
             className="text-bloodhound-crimson font-bold font-mono text-xs hover:underline cursor-pointer uppercase tracking-wider"
           >
             VIEW FULL events.jsonl
@@ -419,18 +377,23 @@ export default function ReviewQueue({
         </div>
 
         <div className="bg-slate-deep text-white p-6 font-mono text-[12px] rounded-md space-y-2.5 shadow-xl">
-          <div className="flex gap-4 opacity-50">
-            <span className="text-status-ok">[2026-05-23 06:43:21]</span>
-            <span>AUDIT: User 'Moldovean.I.Andrei@gmail.com' focused review task sequence #ID-9921-X</span>
-          </div>
-          <div className="flex gap-4 opacity-50">
-            <span className="text-status-ok">[2026-05-23 07:58:44]</span>
-            <span>Ledger: Flagged compliance quarantine #CPL-402 for regex pattern match verification.</span>
-          </div>
-          <div className="flex gap-4">
-            <span className="text-status-ok">[2026-05-23 08:43:30]</span>
-            <span className="text-amber-400">ACTION: Human decision engine fully synchronized. Awaiting input for active session...</span>
-          </div>
+          {liveTrail.length === 0 ? (
+            <div className="flex gap-4 opacity-50">
+              <span className="text-amber-400">ACTION: Human decision engine fully synchronized. Awaiting input for active session...</span>
+            </div>
+          ) : (
+            liveTrail.map((evt, i) => (
+              <div
+                key={evt.id}
+                className={`flex gap-4 ${i < liveTrail.length - 1 ? 'opacity-50' : ''}`}
+              >
+                <span className="text-status-ok shrink-0">[{evt.timestamp}]</span>
+                <span className={i === liveTrail.length - 1 ? 'text-amber-400' : ''}>
+                  {evt.actor}: {evt.payloadSummary}
+                </span>
+              </div>
+            ))
+          )}
         </div>
       </section>
 

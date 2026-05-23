@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   AlertTriangle, Clock, MoreVertical, CheckCircle, History, RefreshCw,
   Shield, UserPlus, Microscope, Search, X, Filter, ExternalLink,
@@ -58,16 +58,13 @@ function CandidateDetailDrawer({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // B1 fix: use api.fetchCandidateDetail instead of raw inline fetch
   useEffect(() => {
     setLoading(true);
     setError(null);
-    fetch(`/api/candidates/${candidateId}`)
-      .then((r) => {
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        return r.json();
-      })
-      .then((d) => setDetail(d as CandidateDetail))
-      .catch((e) => setError(e.message))
+    api.fetchCandidateDetail(candidateId)
+      .then((d) => setDetail(d))
+      .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
   }, [candidateId]);
 
@@ -255,37 +252,43 @@ export default function CandidatePool({
   const [openActionCandidateId, setOpenActionCandidateId] = useState<string | null>(null);
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
 
+  // B2 fix: ref on the action menu container to detect outside clicks
+  const actionMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!openActionCandidateId) return;
+    function handleOutsideClick(e: MouseEvent) {
+      if (actionMenuRef.current && !actionMenuRef.current.contains(e.target as Node)) {
+        setOpenActionCandidateId(null);
+      }
+    }
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [openActionCandidateId]);
+
   const handleOpenDrawer = useCallback((id: string) => {
     setOpenActionCandidateId(null);
     setDrawerCandidateId(id);
   }, []);
 
-  // Dynamic lists from all candidates
   const availableSeniorities = useMemo(() => {
     const sSet = new Set<string>();
-    candidates.forEach((c) => {
-      if (c.seniority) sSet.add(c.seniority.trim());
-    });
+    candidates.forEach((c) => { if (c.seniority) sSet.add(c.seniority.trim()); });
     return Array.from(sSet).sort();
   }, [candidates]);
 
   const availableSkills = useMemo(() => {
     const skSet = new Set<string>();
-    candidates.forEach((c) => {
-      c.topSkills.forEach((s) => {
-        if (s) skSet.add(s.trim().toUpperCase());
-      });
-    });
+    candidates.forEach((c) => { c.topSkills.forEach((s) => { if (s) skSet.add(s.trim().toUpperCase()); }); });
     return Array.from(skSet).sort();
   }, [candidates]);
 
-  // Filter & sort candidates
   const filteredCandidates = useMemo(() => {
     let result = candidates.filter((cand) => {
       const combinedQuery = (searchQuery.trim() + ' ' + localSearch.trim()).trim().toLowerCase();
       if (combinedQuery) {
         const queryTerms = combinedQuery.split(/\s+/);
-        const matchesQuery = queryTerms.every(term => 
+        const matchesQuery = queryTerms.every(term =>
           cand.name.toLowerCase().includes(term) ||
           cand.id.toLowerCase().includes(term) ||
           cand.seniority.toLowerCase().includes(term) ||
@@ -308,20 +311,16 @@ export default function CandidatePool({
     });
   }, [candidates, searchQuery, localSearch, activeFilter, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, sortBy]);
 
-  const hasActiveFilters = useMemo(() => {
-    return (
-      localSearch.trim() !== '' ||
-      selectedSeniority !== 'all' ||
-      selectedSkill !== 'all' ||
-      selectedStatus !== 'all' ||
-      minMatchScore > 0 ||
-      activeFilter !== 'all'
-    );
-  }, [localSearch, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, activeFilter]);
+  const hasActiveFilters = useMemo(() => (
+    localSearch.trim() !== '' ||
+    selectedSeniority !== 'all' ||
+    selectedSkill !== 'all' ||
+    selectedStatus !== 'all' ||
+    minMatchScore > 0 ||
+    activeFilter !== 'all'
+  ), [localSearch, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, activeFilter]);
 
-  useEffect(() => {
-    setCurrentPage(1);
-  }, [searchQuery, localSearch, activeFilter, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, sortBy]);
+  useEffect(() => { setCurrentPage(1); }, [searchQuery, localSearch, activeFilter, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, sortBy]);
 
   const handleClearAllFilters = () => {
     setLocalSearch('');
@@ -341,13 +340,12 @@ export default function CandidatePool({
     setOpenActionCandidateId(null);
   };
 
-  const totals = useMemo(() => {
-    const total = candidates.length;
-    const pendingReviews = candidates.filter((c) => c.complianceStatus === 'PENDING REVIEW').length;
-    const staleRecords = candidates.filter((c) => c.complianceStatus === 'EXPIRING (14D)').length;
-    const compliant = candidates.filter((c) => c.complianceStatus === 'COMPLIANT').length;
-    return { total, pendingReviews, staleRecords, compliant };
-  }, [candidates]);
+  const totals = useMemo(() => ({
+    total: candidates.length,
+    pendingReviews: candidates.filter((c) => c.complianceStatus === 'PENDING REVIEW').length,
+    staleRecords: candidates.filter((c) => c.complianceStatus === 'EXPIRING (14D)').length,
+    compliant: candidates.filter((c) => c.complianceStatus === 'COMPLIANT').length,
+  }), [candidates]);
 
   return (
     <div className="space-y-12 animate-in fade-in duration-300">
@@ -601,7 +599,8 @@ export default function CandidatePool({
                             </button>
                           );
                         })() : (
-                          <div className="relative inline-block">
+                          // B2 fix: attach ref to the menu wrapper for outside-click detection
+                          <div className="relative inline-block" ref={openActionCandidateId === candidate.id ? actionMenuRef : undefined}>
                             <button type="button"
                               className="text-on-surface-variant hover:text-primary transition-colors cursor-pointer p-1 rounded hover:bg-surface-container"
                               onClick={() => setOpenActionCandidateId(openActionCandidateId === candidate.id ? null : candidate.id)}

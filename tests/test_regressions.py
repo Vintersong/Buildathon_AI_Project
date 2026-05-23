@@ -1,4 +1,5 @@
 import json
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -106,6 +107,100 @@ class RegressionTests(unittest.TestCase):
                 self.assertEqual(saved.provenance[0]["event_id"], "evt_test")
                 index = json.loads((indexes / "record_index.json").read_text())
                 self.assertIn("cand_test", index)
+
+    def test_candidate_api_recovers_records_missing_from_index(self):
+        from core import store
+        from web import app as web_app
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            records = base / "records"
+            indexes = base / "indexes"
+            records.mkdir()
+            indexes.mkdir()
+            (indexes / "record_index.json").write_text("{}")
+            (records / "cand_unindexed.json").write_text(make_record().model_dump_json(indent=2), encoding="utf-8")
+
+            with patch.object(web_app, "RECORDS_DIR", records), \
+                patch.object(web_app, "RECORD_INDEX_PATH", indexes / "record_index.json"), \
+                patch.object(store, "RECORDS_DIR", records):
+                candidates = asyncio.run(web_app.list_candidates())
+
+            self.assertEqual(len(candidates), 1)
+            self.assertEqual(candidates[0]["id"], "cand_unindexed")
+
+    def test_review_approval_records_consent_and_collapses_duplicate_reason_cases(self):
+        from core import review, store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            records = base / "records"
+            indexes = base / "indexes"
+            logs = base / "logs"
+            records.mkdir()
+            indexes.mkdir()
+            logs.mkdir()
+            (indexes / "record_index.json").write_text("{}")
+            queue_path = logs / "review_queue.json"
+            queue_path.write_text(json.dumps([
+                {"case_id": "case_a", "record_id": "cand_test", "reason": "missing_consent", "status": "open"},
+                {"case_id": "case_b", "record_id": "cand_test", "reason": "missing_consent", "status": "open"},
+                {"case_id": "case_c", "record_id": "cand_test", "reason": "low_extraction_confidence", "status": "open"},
+            ]))
+            record = make_record(
+                state=State(status="pending_review"),
+                compliance=Compliance(consent_basis=None, source="document", retention_until="2099-01-01T00:00:00Z", human_review_required=True),
+            )
+            (records / "cand_test.json").write_text(record.model_dump_json(indent=2), encoding="utf-8")
+
+            with patch.object(review, "REVIEW_QUEUE_PATH", queue_path), \
+                patch.object(store, "RECORDS_DIR", records), \
+                patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"):
+                review.resolve_case("case_a", "approved", "tester")
+                queue = json.loads(queue_path.read_text())
+                saved = store.load_record("cand_test")
+
+            statuses = {case["case_id"]: case["status"] for case in queue}
+            self.assertEqual(statuses["case_a"], "resolved")
+            self.assertEqual(statuses["case_b"], "resolved")
+            self.assertEqual(statuses["case_c"], "open")
+            self.assertEqual(saved.compliance.consent_basis, "uploaded_consent_proof")
+            self.assertTrue(saved.compliance.human_review_required)
+
+    def test_review_purge_archives_record_and_resolves_all_record_cases(self):
+        from core import review, store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            records = base / "records"
+            indexes = base / "indexes"
+            logs = base / "logs"
+            records.mkdir()
+            indexes.mkdir()
+            logs.mkdir()
+            (indexes / "record_index.json").write_text("{}")
+            queue_path = logs / "review_queue.json"
+            queue_path.write_text(json.dumps([
+                {"case_id": "case_a", "record_id": "cand_test", "reason": "missing_consent", "status": "open"},
+                {"case_id": "case_b", "record_id": "cand_test", "reason": "low_extraction_confidence", "status": "open"},
+            ]))
+            record = make_record(
+                state=State(status="pending_review"),
+                compliance=Compliance(consent_basis=None, source="document", retention_until="2099-01-01T00:00:00Z", human_review_required=True),
+            )
+            (records / "cand_test.json").write_text(record.model_dump_json(indent=2), encoding="utf-8")
+
+            with patch.object(review, "REVIEW_QUEUE_PATH", queue_path), \
+                patch.object(store, "RECORDS_DIR", records), \
+                patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"):
+                review.resolve_case("case_a", "purged", "tester")
+                queue = json.loads(queue_path.read_text())
+                saved = store.load_record("cand_test")
+
+            self.assertTrue(all(case["status"] == "resolved" for case in queue))
+            self.assertTrue(saved.state.archived)
+            self.assertEqual(saved.state.status, "archived")
+            self.assertFalse(saved.compliance.human_review_required)
 
     def test_matching_handles_missing_records_and_missing_scores(self):
         from core import match

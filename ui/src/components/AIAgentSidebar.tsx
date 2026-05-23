@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Sparkles, Send, X, Bot, User, Trash2, Cpu, HelpCircle, FileText, ChevronRight, RefreshCw, Terminal } from 'lucide-react';
+import { Sparkles, Send, X, Bot, User, Trash2, Cpu, RefreshCw, Terminal, CheckCircle, Briefcase } from 'lucide-react';
 import { Candidate, JobRequirement, ReviewTask } from '../types';
 
 interface AIAgentSidebarProps {
@@ -8,12 +8,15 @@ interface AIAgentSidebarProps {
   candidates: Candidate[];
   jobs: JobRequirement[];
   reviewTasks: ReviewTask[];
+  onJobCreated?: () => void;
+  onNavigate?: (screen: 'candidates' | 'jobs' | 'review' | 'audit' | 'settings') => void;
 }
 
 export interface Message {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
+  actionCard?: { type: string; title: string; subtitle: string };
 }
 
 export default function AIAgentSidebar({
@@ -21,18 +24,20 @@ export default function AIAgentSidebar({
   onClose,
   candidates,
   jobs,
-  reviewTasks
+  reviewTasks,
+  onJobCreated,
+  onNavigate,
 }: AIAgentSidebarProps) {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: `👋 Hello! I am the **Bloodhound compliance and recruitment copilot**, powered by **Gemini**.
+      content: `Hello! I am the **Bloodhound AI Copilot**.
 
-I have real-time access to the candidate ledger and compliance queues. You can ask me to:
-- **Audit Compliance**: "Analyze the high-risk candidates and explain the flags."
-- **Generate Outreach**: "Draft a personalized outreach for the top-matched candidate."
-- **Evaluate Qualifications**: "Compare the top candidates against active job requirements."
-- **Scan Database**: "How many candidates have GDPR issues?"`,
+I have real-time access to the talent pool and job matrix. You can ask me to:
+- **Create jobs**: "Create a job for a Senior Python Developer in Berlin"
+- **Search jobs**: "Find all remote engineering roles"
+- **Audit compliance**: "What GDPR tasks are pending?"
+- **Pool overview**: "How many candidates do we have?"`,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);
@@ -84,11 +89,28 @@ I have real-time access to the candidate ledger and compliance queues. You can a
       }
 
       const data = await res.json();
-      
+
+      const actions: Array<{ type: string; data?: Record<string, unknown> }> = data.actions || [];
+
+      // Handle side-effects from agent actions
+      const jobCreated = actions.find((a) => a.type === 'job_created');
+      if (jobCreated) {
+        onJobCreated?.();
+      }
+
+      const actionCard = jobCreated && jobCreated.data
+        ? {
+            type: 'job_created',
+            title: String((jobCreated.data as Record<string, unknown>).title || 'New Job'),
+            subtitle: `${(jobCreated.data as Record<string, unknown>).location || ''} • ${(jobCreated.data as Record<string, unknown>).department || ''}`.trim().replace(/^•\s*/, ''),
+          }
+        : undefined;
+
       const assistantMsg: Message = {
         role: 'assistant',
         content: data.text || "I was unable to retrieve a response from the database ledger.",
-        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        actionCard,
       };
 
       setMessages((prev) => [...prev, assistantMsg]);
@@ -113,17 +135,17 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
     setMessages([
       {
         role: 'assistant',
-        content: "Core conversation logs flushed. Let's start fresh. How can I assist with your candidate metrics today?",
+        content: "Context cleared. How can I assist? Try: _\"Create a job for a Senior Python Developer\"_ or _\"Show me all active roles\"_.",
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
   };
 
   const samplePrompts = [
-    "Run a compliance audit on the candidate pool",
-    "Draft outreach for the top-matched candidate",
-    "Identify GDPR compliance bottlenecks",
-    "Rank candidates against active job requirements"
+    "Create a job for a Senior React Developer in Berlin",
+    "Find all remote engineering roles",
+    "How many candidates are in the pool?",
+    "What GDPR compliance tasks are pending?"
   ];
 
   // A bespoke markdown style inline compiler to process lists, bold text, headers, and code snippets safely and elegantly
@@ -267,15 +289,35 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
               {/* Chat bubble */}
               <div className="space-y-1">
                 <div className={`p-3 rounded-lg border text-xs shadow-xs transition-shadow ${
-                  isAI 
-                    ? 'bg-white border-border-subtle text-slate-800 rounded-tl-none' 
+                  isAI
+                    ? 'bg-white border-border-subtle text-slate-800 rounded-tl-none'
                     : 'bg-slate-deep border-slate-700 text-white rounded-tr-none'
                 }`}>
                   <div className="space-y-1.5">
                     {formatMarkdown(msg.content)}
                   </div>
                 </div>
-                
+
+                {/* Action confirmation card */}
+                {msg.actionCard?.type === 'job_created' && (
+                  <div
+                    className="mt-1.5 p-2.5 bg-emerald-50 border border-emerald-200 rounded-lg flex items-center gap-2.5 cursor-pointer hover:bg-emerald-100 transition-colors"
+                    onClick={() => onNavigate?.('jobs')}
+                    title="Go to Job Match Matrix"
+                  >
+                    <div className="p-1 bg-emerald-100 rounded border border-emerald-200 shrink-0">
+                      <Briefcase className="w-3.5 h-3.5 text-emerald-700" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[11px] font-bold text-emerald-800 truncate">{msg.actionCard.title}</p>
+                      {msg.actionCard.subtitle && (
+                        <p className="text-[10px] text-emerald-600 font-mono truncate">{msg.actionCard.subtitle}</p>
+                      )}
+                    </div>
+                    <CheckCircle className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  </div>
+                )}
+
                 <span className={`block text-[9px] font-mono text-slate-400 ${isAI ? 'text-left' : 'text-right'}`}>
                   {msg.timestamp}
                 </span>

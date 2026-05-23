@@ -207,7 +207,7 @@ export default function ReviewQueue({
                           </div>
                           <div className="flex flex-col gap-0.5">
                             <span className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">LINKEDIN URL</span>
-                            <a href="#" className="text-bloodhound-crimson hover:underline flex items-center gap-1">
+                            <a href={task.existingRecord.linkedin} target="_blank" rel="noreferrer" className="text-bloodhound-crimson hover:underline flex items-center gap-1">
                               <span>{task.existingRecord.linkedin}</span>
                               <ExternalLink className="w-3.5 h-3.5" />
                             </a>
@@ -333,7 +333,7 @@ export default function ReviewQueue({
                             onClick={() => onResolveTask(task.id, 'approved')}
                             className="w-full py-2 border border-border-subtle text-slate-700 hover:bg-slate-50 font-semibold text-xs rounded cursor-pointer transition-colors"
                           >
-                            Upload Consent Proof
+                            {task.complianceDetails.reason === 'missing_consent' ? 'Upload Consent Proof' : 'Approve Extracted Data'}
                           </button>
                         </div>
                       </div>

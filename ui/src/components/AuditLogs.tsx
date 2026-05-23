@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Database, Download, RefreshCw, CheckCircle, Cpu, Gavel, Globe, Server, Code, FileCode, ArrowLeft, ArrowRight } from 'lucide-react';
 import { AuditEvent } from '../types';
 
@@ -38,6 +38,10 @@ export default function AuditLogs({ events, searchQuery }: AuditLogsProps) {
 
   const totalPages = Math.max(1, Math.ceil(filteredEvents.length / PAGE_SIZE));
   const pagedEvents = filteredEvents.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [actorFilter, searchQuery]);
 
   const handleReindex = () => {
     setIsReindexing(true);
@@ -289,7 +293,7 @@ export default function AuditLogs({ events, searchQuery }: AuditLogsProps) {
 
           {/* Footer Stream pagination */}
           <div className="flex items-center justify-between px-6 py-4 bg-white border-t border-border-subtle font-sans font-bold text-[10px] tracking-wide text-on-surface-variant select-none">
-            <span>SHOWING {Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredEvents.length)}–{Math.min(currentPage * PAGE_SIZE, filteredEvents.length)} OF {filteredEvents.length.toLocaleString()} EVENTS</span>
+            <span>SHOWING {filteredEvents.length === 0 ? 0 : Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredEvents.length)}–{Math.min(currentPage * PAGE_SIZE, filteredEvents.length)} OF {filteredEvents.length.toLocaleString()} EVENTS</span>
             <div className="flex gap-2 shrink-0">
               <button
                 disabled={currentPage <= 1}

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { AlertTriangle, Clock, MoreVertical, CheckCircle, HelpCircle, History, RefreshCw, Layers, Shield, UserPlus, Microscope, Search, X, SlidersHorizontal, Filter } from 'lucide-react';
 import { Candidate, AuditEvent, ReviewTask } from '../types';
 
@@ -34,8 +34,9 @@ export default function CandidatePool({
   const [selectedSeniority, setSelectedSeniority] = useState<string>('all');
   const [selectedSkill, setSelectedSkill] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
-  const [minMatchScore, setMinMatchScore] = useState<number>(0.5);
+  const [minMatchScore, setMinMatchScore] = useState<number>(0);
   const [currentPage, setCurrentPage] = useState(1);
+  const [openActionCandidateId, setOpenActionCandidateId] = useState<string | null>(null);
 
   // Dynamic lists from all candidates
   const availableSeniorities = useMemo(() => {
@@ -122,23 +123,32 @@ export default function CandidatePool({
       selectedSeniority !== 'all' ||
       selectedSkill !== 'all' ||
       selectedStatus !== 'all' ||
-      minMatchScore > 0.5 ||
+      minMatchScore > 0 ||
       activeFilter !== 'all'
     );
   }, [localSearch, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, activeFilter]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, localSearch, activeFilter, selectedSeniority, selectedSkill, selectedStatus, minMatchScore, sortBy]);
 
   const handleClearAllFilters = () => {
     setLocalSearch('');
     setSelectedSeniority('all');
     setSelectedSkill('all');
     setSelectedStatus('all');
-    setMinMatchScore(0.5);
+    setMinMatchScore(0);
     setActiveFilter('all');
     setCurrentPage(1);
   };
 
   const totalPages = Math.max(1, Math.ceil(filteredCandidates.length / PAGE_SIZE));
   const pagedCandidates = filteredCandidates.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+
+  const handleStatusOverride = (candidateId: string, status: Candidate['complianceStatus']) => {
+    onResolveCandidateDirectly(candidateId, status);
+    setOpenActionCandidateId(null);
+  };
 
   // Statistics summaries
   const totals = useMemo(() => {
@@ -318,7 +328,8 @@ export default function CandidatePool({
               value={String(minMatchScore)}
               onChange={(e) => setMinMatchScore(Number(e.target.value))}
             >
-              <option value="0.5">Show All (≥ 0.50)</option>
+              <option value="0">Show All</option>
+              <option value="0.5">≥ 0.50 Match</option>
               <option value="0.7">≥ 0.70 Match</option>
               <option value="0.8">≥ 0.80 Match</option>
               <option value="0.9">≥ 0.90 Match</option>
@@ -487,7 +498,7 @@ export default function CandidatePool({
                       </td>
 
                       {/* Row actions */}
-                      <td className="px-6 py-3">
+                      <td className="px-6 py-3 relative">
                         {isReviewState ? (() => {
                           const task = reviewTasks.find(t =>
                             t.status === 'pending' && (
@@ -507,9 +518,52 @@ export default function CandidatePool({
                             </button>
                           );
                         })() : (
-                          <button className="text-on-surface-variant hover:text-primary transition-colors cursor-pointer">
-                            <MoreVertical className="w-5 h-5" />
-                          </button>
+                          <div className="relative inline-block">
+                            <button
+                              type="button"
+                              className="text-on-surface-variant hover:text-primary transition-colors cursor-pointer p-1 rounded hover:bg-surface-container"
+                              onClick={() => setOpenActionCandidateId(openActionCandidateId === candidate.id ? null : candidate.id)}
+                              aria-expanded={openActionCandidateId === candidate.id}
+                              aria-label={`Open actions for ${candidate.name}`}
+                            >
+                              <MoreVertical className="w-5 h-5" />
+                            </button>
+                            {openActionCandidateId === candidate.id && (
+                              <div className="absolute right-0 top-8 z-20 w-52 bg-white border border-border-subtle rounded-md shadow-lg py-1 font-sans">
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusOverride(candidate.id, 'COMPLIANT')}
+                                  className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer"
+                                >
+                                  Mark compliant
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusOverride(candidate.id, 'PENDING REVIEW')}
+                                  className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer"
+                                >
+                                  Send to review
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleStatusOverride(candidate.id, 'EXPIRING (14D)')}
+                                  className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer"
+                                >
+                                  Flag consent expiring
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenActionCandidateId(null);
+                                    onNavigate('audit');
+                                  }}
+                                  className="block w-full text-left px-3 py-2 text-xs hover:bg-surface-container text-on-surface cursor-pointer border-t border-border-subtle"
+                                >
+                                  View audit trail
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         )}
                       </td>
                     </tr>
@@ -523,7 +577,7 @@ export default function CandidatePool({
         {/* Pagination details */}
         <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-between font-sans">
           <span className="text-sm text-on-surface-variant">
-            Showing {Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredCandidates.length)}–{Math.min(currentPage * PAGE_SIZE, filteredCandidates.length)} of {filteredCandidates.length} candidates
+            Showing {filteredCandidates.length === 0 ? 0 : Math.min((currentPage - 1) * PAGE_SIZE + 1, filteredCandidates.length)}–{Math.min(currentPage * PAGE_SIZE, filteredCandidates.length)} of {filteredCandidates.length} candidates
           </span>
           <div className="flex gap-2">
             <button

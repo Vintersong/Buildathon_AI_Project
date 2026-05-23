@@ -46,23 +46,99 @@ def add_to_queue(cases: List[Dict[str, Any]]):
 def resolve_case(case_id: str, resolution: str, reviewer: str):
     _ensure_queue()
     resolved_record_id = None
+    resolved_reason = None
     lock = FileLock(f"{REVIEW_QUEUE_PATH}.lock")
     with lock:
         with open(REVIEW_QUEUE_PATH, "r", encoding="utf-8") as f:
             queue = json.load(f)
-            
+
+        selected_case = next((case for case in queue if case.get("case_id") == case_id), None)
+        if not selected_case:
+            raise ValueError(f"Review case not found: {case_id}")
+
+        resolved_record_id = selected_case.get("record_id")
+        resolved_reason = selected_case.get("reason")
+
         for case in queue:
-            if case["case_id"] == case_id:
+            should_resolve = case.get("case_id") == case_id
+            if resolved_record_id and case.get("record_id") == resolved_record_id and case.get("status") == "open":
+                if resolution == "purged":
+                    should_resolve = True
+                elif case.get("reason") == resolved_reason:
+                    should_resolve = True
+
+            if should_resolve:
                 case["status"] = "resolved"
                 case["resolution"] = resolution
                 case["reviewer"] = reviewer
-                resolved_record_id = case.get("record_id")
                 
         with open(REVIEW_QUEUE_PATH, "w", encoding="utf-8") as f:
             json.dump(queue, f, indent=2)
 
+    if resolved_record_id and resolution == "purged":
+        _archive_record(resolved_record_id, reviewer, resolved_reason)
+        return
+
+    if resolved_record_id and resolution == "approved" and resolved_reason == "missing_consent":
+        _record_consent_proof(resolved_record_id, reviewer)
+
     if resolved_record_id and not has_open_cases(resolved_record_id):
         _clear_record_review_hold(resolved_record_id, reviewer)
+
+
+def _archive_record(record_id: str, reviewer: str, reason: str | None):
+    from datetime import datetime
+    import uuid
+    from .store import load_record, save_record
+
+    record = load_record(record_id)
+    if not record:
+        return
+    record.compliance.human_review_required = False
+    record.state.archived = True
+    record.state.status = "archived"
+    now = datetime.utcnow().isoformat() + "Z"
+    record.updated_at = now
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "non_compliant_record_purged",
+        "timestamp": now,
+        "source": {"source_type": "review_queue"},
+        "actor": {"type": "human", "reviewer": reviewer},
+        "changes": [
+            {"operation": "replace", "path": "/state/archived", "value": True},
+            {"operation": "replace", "path": "/state/status", "value": "archived"},
+            {"operation": "replace", "path": "/compliance/human_review_required", "value": False},
+        ],
+        "review": {"required": False, "resolution": "purged", "reason": reason}
+    }
+    save_record(record_id, record, event=event)
+
+
+def _record_consent_proof(record_id: str, reviewer: str):
+    from datetime import datetime
+    import uuid
+    from .store import load_record, save_record
+
+    record = load_record(record_id)
+    if not record:
+        return
+    if record.compliance.consent_basis:
+        return
+    record.compliance.consent_basis = "uploaded_consent_proof"
+    now = datetime.utcnow().isoformat() + "Z"
+    record.updated_at = now
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "consent_proof_uploaded",
+        "timestamp": now,
+        "source": {"source_type": "review_queue"},
+        "actor": {"type": "human", "reviewer": reviewer},
+        "changes": [{"operation": "replace", "path": "/compliance/consent_basis", "value": "uploaded_consent_proof"}],
+        "review": {"required": True, "resolution": "approved", "reason": "missing_consent"}
+    }
+    save_record(record_id, record, event=event)
+
 
 def _clear_record_review_hold(record_id: str, reviewer: str):
     from datetime import datetime

@@ -31,8 +31,7 @@ if (apiKey) {
 
 const app = express();
 const PORT = 3000;
-
-app.use(express.json({ limit: "15mb" }));
+const jsonBodyParser = express.json({ limit: "15mb" });
 
 // ─── Guardrails ───────────────────────────────────────────────────────────────
 
@@ -107,7 +106,7 @@ app.get("/api/health", (req, res) => {
 });
 
 // 2. Main Gemini chat audit proxy endpoint
-app.post("/api/gemini/chat", async (req, res) => {
+app.post("/api/gemini/chat", jsonBodyParser, async (req, res) => {
   try {
     const { messages, context } = req.body;
 
@@ -199,7 +198,7 @@ Be structured, objective, and concise. Keep the tone helpful and professional.`;
 });
 
 // 3. Specialized Resume CV parsing service to directly populate candidate ingest modal
-app.post("/api/gemini/parse-cv", async (req, res) => {
+app.post("/api/gemini/parse-cv", jsonBodyParser, async (req, res) => {
   try {
     const { resumeText } = req.body;
 

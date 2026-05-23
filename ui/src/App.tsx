@@ -73,9 +73,11 @@ export default function App() {
         api.fetchCandidates(),
         api.fetchAuditEvents(),
       ]);
+      const updatedTasks = await api.fetchReviewTasks();
       setCandidates(updatedCandidates);
+      setReviewTasks(updatedTasks);
       setAuditEvents(updatedAudit);
-      setNotificationsCount((c) => c + 1);
+      setNotificationsCount(updatedTasks.filter((t) => t.status === 'pending').length);
       triggerToast(`Candidate ${newCand.name} Successfully Ingested! ID: ${newCand.id}`);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -90,11 +92,13 @@ export default function App() {
     markSyncing();
     try {
       await api.resolveTask(taskId, outcome);
-      const [updatedTasks, updatedAudit] = await Promise.all([
+      const [updatedTasks, updatedCandidates, updatedAudit] = await Promise.all([
         api.fetchReviewTasks(),
+        api.fetchCandidates(),
         api.fetchAuditEvents(),
       ]);
       setReviewTasks(updatedTasks);
+      setCandidates(updatedCandidates);
       setAuditEvents(updatedAudit);
       setNotificationsCount(updatedTasks.filter((t) => t.status === 'pending').length);
       triggerToast(`Decision Committed: Task #${taskId} has been successfully verified.`);
@@ -129,6 +133,16 @@ export default function App() {
     triggerToast('Direct status override completed for Candidate record.');
   };
 
+  const handleDismissLowMatches = () => {
+    setJobs((prev) =>
+      prev.map((job) => ({
+        ...job,
+        shortlist: job.shortlist.filter((candidate) => candidate.confidence >= 0.75 || candidate.status === 'pending_review'),
+      }))
+    );
+    triggerToast('Low-confidence shortlist matches hidden from the current matrix.', 'info');
+  };
+
   return (
     <div className="flex bg-canvas min-h-screen relative text-slate-800 antialiased selection:bg-surface-container-highest">
 
@@ -156,6 +170,7 @@ export default function App() {
           isAICopilotOpen={showAICopilot}
           onToggleAICopilot={() => setShowAICopilot((v) => !v)}
           onBellClick={() => setActiveScreen('review')}
+          onProfileClick={() => setActiveScreen('settings')}
         />
 
         <main className="flex-grow p-8 max-w-[1400px] mx-auto w-full overflow-y-auto">
@@ -180,7 +195,7 @@ export default function App() {
               onOpenReviewTask={(taskId) => { setFocusedTaskId(taskId); setActiveScreen('review'); }}
               onAddJob={handleAddJob}
               reviewTasks={reviewTasks}
-              onBulkDismiss={refreshAll}
+              onBulkDismiss={handleDismissLowMatches}
             />
           )}
 
@@ -239,6 +254,8 @@ export default function App() {
         candidates={candidates}
         jobs={jobs}
         reviewTasks={reviewTasks}
+        onJobCreated={refreshAll}
+        onNavigate={(sc) => { setActiveScreen(sc); setShowAICopilot(false); }}
       />
 
     </div>

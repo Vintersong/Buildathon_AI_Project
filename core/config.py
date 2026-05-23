@@ -2,23 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-load_dotenv(dotenv_path=_ENV_FILE, override=True)
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-def _env_int(name: str, default: int) -> int:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
+load_dotenv()
 
 # Base project directory
 BASE_DIR = Path(__file__).parent.parent
@@ -47,23 +31,17 @@ MANIFEST_PATH = INDEXES_DIR / "manifest.json"
 # API Keys
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Security/compliance defaults
-APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
-ENABLE_EXTERNAL_LLM = _env_bool("ENABLE_EXTERNAL_LLM", False)
-ENABLE_EXTERNAL_OUTREACH_LLM = _env_bool("ENABLE_EXTERNAL_OUTREACH_LLM", False)
-ENABLE_LOCAL_EMBEDDINGS = _env_bool("ENABLE_LOCAL_EMBEDDINGS", False)
-DEFAULT_RETENTION_DAYS = _env_int("DEFAULT_RETENTION_DAYS", 180)
-DEFAULT_DATA_REGION = os.getenv("DEFAULT_DATA_REGION", "EEA")
-DEFAULT_CONSENT_BASIS = os.getenv("DEFAULT_CONSENT_BASIS")
-TALENT_POOL_ADMIN_TOKEN = os.getenv("TALENT_POOL_ADMIN_TOKEN")
-if not TALENT_POOL_ADMIN_TOKEN and APP_ENV in {"development", "local", "test"}:
-    TALENT_POOL_ADMIN_TOKEN = "dev-token"
+# Feature flags
+# Set ENABLE_EXTERNAL_OUTREACH_LLM=true in .env to allow the outreach module
+# to call an external LLM for personalized email drafts.
+# When false (default), a safe local template is used instead.
+ENABLE_EXTERNAL_OUTREACH_LLM = os.getenv("ENABLE_EXTERNAL_OUTREACH_LLM", "false").lower() == "true"
 
-# Intake safety limits
-MAX_INGEST_FILE_BYTES = _env_int("MAX_INGEST_FILE_BYTES", 5 * 1024 * 1024)
-MAX_PDF_PAGES = _env_int("MAX_PDF_PAGES", 25)
+# Stale-refresh threshold: candidates not updated within this many months
+# will be flagged by the auto-refresh job.
+STALE_REFRESH_MONTHS = int(os.getenv("STALE_REFRESH_MONTHS", "6"))
 
-# Create directories if they don't exist
+
 def init_directories():
     directories = [
         RECORDS_DIR,
@@ -86,5 +64,6 @@ def init_directories():
         RECORD_INDEX_PATH.write_text("{}")
     if not MANIFEST_PATH.exists():
         MANIFEST_PATH.write_text("{}")
+
 
 init_directories()

@@ -15,6 +15,7 @@ interface HeaderProps {
   isAICopilotOpen: boolean;
   onToggleAICopilot: () => void;
   onBellClick?: () => void;
+  onProfileClick?: () => void;
 }
 
 export default function Header({
@@ -26,7 +27,8 @@ export default function Header({
   notificationsCount,
   isAICopilotOpen,
   onToggleAICopilot,
-  onBellClick
+  onBellClick,
+  onProfileClick
 }: HeaderProps) {
   // Get screen-specific placeholder
   const getPlaceholder = () => {
@@ -105,9 +107,14 @@ export default function Header({
               <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-bloodhound-crimson rounded-full ring-2 ring-white animate-bounce"></span>
             )}
           </button>
-          <div className="p-1 h-8 w-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant hover:text-primary border border-border-subtle cursor-pointer font-sans text-xs font-bold">
+          <button
+            type="button"
+            onClick={onProfileClick}
+            className="p-1 h-8 w-8 rounded-full bg-surface-container flex items-center justify-center text-on-surface-variant hover:text-primary border border-border-subtle cursor-pointer font-sans text-xs font-bold"
+            title="Open settings"
+          >
             <User className="w-4 h-4" />
-          </div>
+          </button>
         </div>
       </div>
     </header>

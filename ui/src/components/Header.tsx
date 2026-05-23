@@ -30,7 +30,6 @@ export default function Header({
   onBellClick,
   onProfileClick
 }: HeaderProps) {
-  // Get screen-specific placeholder
   const getPlaceholder = () => {
     switch (activeScreen) {
       case 'candidates':
@@ -66,13 +65,13 @@ export default function Header({
       {/* Utilities */}
       <div className="flex items-center gap-6 ml-4 select-none">
         {/* Sync Status Badge */}
-        <button 
-          onClick={onForceSync} 
+        <button
+          onClick={onForceSync}
           className="flex items-center gap-2 px-3 py-1 bg-surface-container rounded-md hover:bg-surface-container-high transition-colors text-xs font-semibold cursor-pointer"
         >
           <CloudCheck className={`w-4 h-4 text-status-ok ${isSynced ? '' : 'animate-spin'}`} />
           <span className="font-mono text-status-ok tracking-wide">
-            {isSynced ? 'LOCAL STORAGE SYNCED' : 'SYNCING CHANGES...'}
+            {isSynced ? 'RECORD INDEX SYNCED' : 'SYNCING CHANGES...'}
           </span>
         </button>
 
@@ -85,12 +84,12 @@ export default function Header({
         {/* Action icons */}
         <div className="flex items-center gap-4 border-l border-border-subtle pl-6">
           {/* AI Copilot Toggle Button */}
-          <button 
+          <button
             id="toggle-ai-copilot-header-btn"
             onClick={onToggleAICopilot}
             className={`p-1.5 rounded-full border transition-all cursor-pointer relative flex items-center justify-center ${
-              isAICopilotOpen 
-                ? 'bg-amber-500 border-amber-500 text-white shadow-md shadow-amber-500/20' 
+              isAICopilotOpen
+                ? 'bg-amber-500 border-amber-500 text-white shadow-md shadow-amber-500/20'
                 : 'bg-amber-50 border-amber-200 text-amber-600 hover:bg-amber-100 hover:text-amber-700'
             }`}
             title="Toggle Bloodhound AI Copilot"

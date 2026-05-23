@@ -87,7 +87,7 @@ export default function SettingsPage({
         <div>
           <h2 className="text-2xl font-bold text-on-surface">System Configuration</h2>
           <p className="text-xs font-sans text-on-surface-variant mt-1.5 max-w-2xl">
-            Global consensus indices thresholds, compliance rules, and underlying neural models.
+            Global confidence thresholds, compliance rules, and underlying neural models.
           </p>
         </div>
 
@@ -217,7 +217,7 @@ export default function SettingsPage({
                   <div className="h-4 w-4 bg-surface-container-high rounded animate-pulse mt-0.5" />
                 ) : (
                   <input
-                    id="settings-sovereigner"
+                    id="settings-sovereign"
                     type="checkbox"
                     className="h-4 w-4 text-slate-deep focus:ring-slate-deep rounded border-gray-300 mt-0.5 cursor-pointer"
                     checked={cfg.sovereign_cloud}
@@ -225,11 +225,11 @@ export default function SettingsPage({
                   />
                 )}
                 <div>
-                  <label htmlFor="settings-sovereigner" className="block text-slate-800 font-bold uppercase tracking-wider text-[10px] cursor-pointer">
+                  <label htmlFor="settings-sovereign" className="block text-slate-800 font-bold uppercase tracking-wider text-[10px] cursor-pointer">
                     Enforce Isolated Local Disk Residency
                   </label>
                   <p className="text-xs text-on-surface-variant leading-relaxed mt-0.5">
-                    Locks decrypted client information in local partitions, skipping remote ingestion cloud synchronisers. Essential for GDPR compliance levels.
+                    Locks decrypted client information in local partitions, skipping remote ingestion cloud synchronizers. Essential for GDPR compliance levels.
                   </p>
                   <p className="text-[10px] text-status-ok mt-1 font-semibold">
                     ✓ Live value from config.json

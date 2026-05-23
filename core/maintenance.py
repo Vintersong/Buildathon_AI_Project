@@ -12,6 +12,8 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     Process a batch of candidate updates (simulating LinkedIn data pulls).
     `updates` is a list of dicts with 'record_id' and 'raw_text'.
+    After updating each record, runs a compliance check and queues any
+    violations for human review.
     """
     results = {"success": 0, "failed": 0, "errors": []}
 
@@ -43,7 +45,6 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
                 )
 
             if extraction.previous_jobs:
-                # Deduplicate without set() to avoid unhashable-type errors on future schema changes
                 existing_jobs = set(record.profile.previous_jobs)
                 for job in extraction.previous_jobs:
                     if job not in existing_jobs:
@@ -63,10 +64,27 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
                 "actor": {"type": "system", "tool": "maintenance_bulk_refresh"},
                 "model": model_info,
                 "changes": [{"operation": "merge", "path": "/profile", "value": "updated_from_linkedin"}],
-                "review": {"required": False}
+                "review": {"required": False},
             }
 
             save_record(record_id, record, event=event)
+
+            # Run compliance check and queue violations for human review
+            try:
+                from .compliance import evaluate_compliance
+                from .review import add_to_queue
+                cases = evaluate_compliance(record_id)
+                if cases:
+                    add_to_queue(cases)
+            except Exception as comp_err:
+                log_error({
+                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "stage": "post_bulk_refresh_compliance",
+                    "record_id": record_id,
+                    "error_type": "ComplianceCheckFailed",
+                    "message": str(comp_err),
+                })
+
             results["success"] += 1
 
         except Exception as e:
@@ -78,7 +96,7 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
                 "stage": "bulk_refresh",
                 "record_id": record_id,
                 "error_type": "RefreshFailed",
-                "message": error_msg
+                "message": error_msg,
             })
 
     return results

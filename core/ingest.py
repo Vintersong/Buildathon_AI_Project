@@ -15,6 +15,10 @@ from .store import load_record, save_record
 from .events import log_error
 from .dedup import find_existing_by_identity
 
+# Default consent basis applied to newly ingested records.
+# Override via DEFAULT_CONSENT_BASIS env var or by patching in tests.
+DEFAULT_CONSENT_BASIS: Optional[str] = os.getenv("DEFAULT_CONSENT_BASIS")
+
 
 def compute_sha256(file_path: Path) -> str:
     sha256_hash = hashlib.sha256()
@@ -73,7 +77,7 @@ def extract_text_from_file(file_path: Path) -> str:
 def ingest_file(file_path: Path, source_type: str = "document", force: bool = False) -> str:
     """
     Ingest a file: hash, dedup (hash + identity), extract text, run LLM extract,
-    create or update record.
+    create or update record, then run compliance checks.
     Returns the record_id.
     """
     # 1. Path allowlist check
@@ -99,7 +103,7 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
             "source_file": file_path.name,
             "source_hash": file_hash,
             "error_type": "ParseFailed",
-            "message": str(e)
+            "message": str(e),
         })
         raise
 
@@ -126,10 +130,10 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
                 primary_name=extraction.name,
                 emails=extraction.emails,
                 phones=extraction.phones,
-                linkedin_url=extraction.linkedin_url
+                linkedin_url=extraction.linkedin_url,
             ),
             profile=Profile(
-                headline=None,  # no direct headline field in extraction; avoid mapping seniority here
+                headline=None,
                 summary=extraction.summary,
                 seniority=extraction.seniority,
                 years_of_experience=extraction.years_of_experience,
@@ -138,14 +142,15 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
                 languages_spoken=extraction.languages_spoken,
                 location=extraction.location,
                 previous_jobs=extraction.previous_jobs,
-                projects_developed=extraction.projects_developed
+                projects_developed=extraction.projects_developed,
             ),
             scores=Scores(
-                extraction_confidence=extraction.extraction_confidence
+                extraction_confidence=extraction.extraction_confidence,
             ),
             compliance=Compliance(
-                human_review_required=(extraction.extraction_confidence < 0.75)
-            )
+                consent_basis=DEFAULT_CONSENT_BASIS,
+                human_review_required=(extraction.extraction_confidence < 0.75),
+            ),
         )
     else:
         # Merge into existing record
@@ -153,7 +158,6 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
         record.profile.technologies_used = list(
             set(record.profile.technologies_used) | set(extraction.technologies_used)
         )
-        # Preserve order, avoid set() on potentially complex objects
         existing_jobs = set(record.profile.previous_jobs)
         for job in extraction.previous_jobs:
             if job not in existing_jobs:
@@ -171,24 +175,40 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
         "source": {
             "file_name": file_path.name,
             "source_type": source_type,
-            "sha256": file_hash
+            "sha256": file_hash,
         },
         "actor": {
             "type": "system",
-            "tool": "record_ingest"
+            "tool": "record_ingest",
         },
         "model": model_info,
         "changes": [{"operation": "replace", "path": "/", "value": "full_extraction"}],
         "review": {
             "required": record.compliance.human_review_required,
-            "reason": "low_extraction_confidence" if record.compliance.human_review_required else None
-        }
+            "reason": "low_extraction_confidence" if record.compliance.human_review_required else None,
+        },
     }
 
     # 8. Save Atomically
     save_record(record_id, record, event=event)
 
-    # 9. Update manifest
+    # 9. Run compliance checks and queue any violations for human review
+    try:
+        from .compliance import evaluate_compliance
+        from .review import add_to_queue
+        cases = evaluate_compliance(record_id)
+        if cases:
+            add_to_queue(cases)
+    except Exception as e:
+        log_error({
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "stage": "post_ingest_compliance",
+            "record_id": record_id,
+            "error_type": "ComplianceCheckFailed",
+            "message": str(e),
+        })
+
+    # 10. Update manifest
     update_manifest(file_hash, record_id)
 
     print(f"Successfully ingested {file_path.name} into {record_id}")
@@ -198,12 +218,12 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
 def _quarantine_security(file_path: Path, reason: str):
     quarantine_id = f"sec_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     folder = QUARANTINE_DIR / "security_rejections"
-    folder.mkdir(parents=True, exist_ok=True)  # ensure folder exists before writing
+    folder.mkdir(parents=True, exist_ok=True)
 
     data = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "reason": reason,
-        "attempted_path": str(file_path)
+        "attempted_path": str(file_path),
     }
 
     with open(folder / f"{quarantine_id}.json", "w", encoding="utf-8") as f:

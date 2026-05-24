@@ -1,0 +1,5 @@
+{
+  "model": "gemini-2.5-flash",
+  "confidence_threshold": 0.85,
+  "sovereign_cloud": false
+}

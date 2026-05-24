@@ -17,6 +17,23 @@ import AIAgentSidebar from './components/AIAgentSidebar';
 import { Candidate, AuditEvent, JobRequirement, ReviewTask } from './types';
 import * as api from './api';
 
+// ── Dismissed shortlist persistence ─────────────────────────────────────────
+const LS_DISMISSED_KEY = 'bld_dismissed_shortlist';
+
+function loadDismissed(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(LS_DISMISSED_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return {};
+}
+
+function saveDismissed(map: Record<string, string[]>) {
+  try {
+    localStorage.setItem(LS_DISMISSED_KEY, JSON.stringify(map));
+  } catch { /* quota exceeded */ }
+}
+
 export default function App() {
   const [activeScreen, setActiveScreen] = useState<'candidates' | 'jobs' | 'review' | 'audit' | 'settings'>('candidates');
   const [searchQuery, setSearchQuery] = useState('');
@@ -25,6 +42,8 @@ export default function App() {
   const [jobs, setJobs] = useState<JobRequirement[]>([]);
   const [reviewTasks, setReviewTasks] = useState<ReviewTask[]>([]);
   const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([]);
+
+  const [dismissed, setDismissed] = useState<Record<string, string[]>>(loadDismissed);
 
   const [isSynced, setIsSynced] = useState(true);
   const [notificationsCount, setNotificationsCount] = useState(0);
@@ -64,7 +83,20 @@ export default function App() {
     refreshAll();
   }, [refreshAll]);
 
-  // 1. Ingest Candidate — receives File from the updated IngestModal
+  // Apply dismissed filter — clamp count to IDs that still exist in shortlist (fixes B2/L3)
+  const jobsWithDismissalApplied = jobs.map((job) => {
+    const dismissedIds = new Set(dismissed[job.id] || []);
+    if (dismissedIds.size === 0) return job;
+    const existingIds = new Set(job.shortlist.map((c) => c.id));
+    const activeDismissedCount = [...dismissedIds].filter((id) => existingIds.has(id)).length;
+    return {
+      ...job,
+      shortlist: job.shortlist.filter((c) => !dismissedIds.has(c.id)),
+      _dismissedCount: activeDismissedCount,
+    } as JobRequirement & { _dismissedCount: number };
+  });
+
+  // 1. Ingest Candidate
   const handleIngestCandidate = async (file: File) => {
     markSyncing();
     try {
@@ -127,20 +159,68 @@ export default function App() {
     }
   };
 
-  // 4. Direct compliance status override (optimistic UI)
-  const handleResolveCandidateDirectly = (id: string, newStatus: Candidate['complianceStatus']) => {
-    setCandidates((prev) => prev.map((c) => (c.id === id ? { ...c, complianceStatus: newStatus } : c)));
-    triggerToast('Direct status override completed for Candidate record.');
+  // 4. Direct compliance override — B1 fix: capture oldStatus before optimistic update
+  const handleResolveCandidateDirectly = async (
+    id: string,
+    newStatus: Candidate['complianceStatus']
+  ) => {
+    // Capture original before mutating (fixes B1 rollback)
+    const oldStatus = candidates.find((c) => c.id === id)?.complianceStatus;
+
+    // Optimistic update
+    setCandidates((prev) =>
+      prev.map((c) => (c.id === id ? { ...c, complianceStatus: newStatus } : c))
+    );
+    try {
+      const updated = await api.patchCandidateStatus(id, newStatus);
+      setCandidates((prev) =>
+        prev.map((c) => (c.id === updated.id ? updated : c))
+      );
+      triggerToast(`Compliance status updated to ${newStatus} and saved.`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Roll back to captured original (fixes B1)
+      if (oldStatus !== undefined) {
+        setCandidates((prev) =>
+          prev.map((c) => (c.id === id ? { ...c, complianceStatus: oldStatus } : c))
+        );
+      }
+      triggerToast(`Status override failed: ${msg}`, 'error');
+      api.fetchCandidates().then(setCandidates).catch(() => null);
+    }
   };
 
-  const handleDismissLowMatches = () => {
-    setJobs((prev) =>
-      prev.map((job) => ({
-        ...job,
-        shortlist: job.shortlist.filter((candidate) => candidate.confidence >= 0.75 || candidate.status === 'pending_review'),
-      }))
-    );
-    triggerToast('Low-confidence shortlist matches hidden from the current matrix.', 'info');
+  // 5. Dismiss low matches — persisted to localStorage per job
+  const handleDismissLowMatches = (jobId: string) => {
+    const job = jobs.find((j) => j.id === jobId);
+    if (!job) return;
+
+    const alreadyDismissed = new Set(dismissed[jobId] || []);
+    const toDismiss = job.shortlist
+      .filter((c) => c.confidence < 0.75 && c.status !== 'pending_review' && !alreadyDismissed.has(c.id))
+      .map((c) => c.id);
+
+    if (toDismiss.length === 0) {
+      triggerToast('No low-confidence candidates to dismiss for this role.', 'info');
+      return;
+    }
+
+    const updated = {
+      ...dismissed,
+      [jobId]: [...alreadyDismissed, ...toDismiss],
+    };
+    setDismissed(updated);
+    saveDismissed(updated);
+    triggerToast(`${toDismiss.length} low-confidence match(es) hidden from matrix.`, 'info');
+  };
+
+  // 5b. Restore dismissed candidates for a job
+  const handleRestoreDismissed = (jobId: string) => {
+    const updated = { ...dismissed };
+    delete updated[jobId];
+    setDismissed(updated);
+    saveDismissed(updated);
+    triggerToast('Dismissed candidates restored to shortlist.', 'info');
   };
 
   return (
@@ -189,13 +269,14 @@ export default function App() {
 
           {activeScreen === 'jobs' && (
             <JobRequirements
-              jobs={jobs}
+              jobs={jobsWithDismissalApplied}
               searchQuery={searchQuery}
               onNavigate={(sc) => { setActiveScreen(sc); setSearchQuery(''); }}
               onOpenReviewTask={(taskId) => { setFocusedTaskId(taskId); setActiveScreen('review'); }}
               onAddJob={handleAddJob}
               reviewTasks={reviewTasks}
               onBulkDismiss={handleDismissLowMatches}
+              onRestoreDismissed={handleRestoreDismissed}
             />
           )}
 

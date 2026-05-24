@@ -10,13 +10,13 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import sys
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
-from core.store import load_record
+from core.store import load_record, save_record
 from core.match import generate_shortlist
 from core.config import (
     RECORDS_DIR,
@@ -39,6 +39,58 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# App config (config.json at project root)
+# ---------------------------------------------------------------------------
+
+CONFIG_PATH = project_root / "config.json"
+
+CONFIG_DEFAULTS = {
+    "model": "gemini-2.5-flash",
+    "confidence_threshold": 0.85,
+    "sovereign_cloud": False,
+}
+
+
+class AppConfig(BaseModel):
+    model: str = Field(default="gemini-2.5-flash")
+    confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    sovereign_cloud: bool = Field(default=False)
+
+
+def load_app_config() -> AppConfig:
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return AppConfig(**{**CONFIG_DEFAULTS, **data})
+    except (FileNotFoundError, json.JSONDecodeError, Exception):
+        return AppConfig(**CONFIG_DEFAULTS)
+
+
+def save_app_config(cfg: AppConfig) -> None:
+    from filelock import FileLock
+    lock = FileLock(f"{CONFIG_PATH}.lock")
+    with lock:
+        tmp = CONFIG_PATH.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cfg.model_dump(), f, indent=2)
+        tmp.replace(CONFIG_PATH)
+
+
+@app.get("/api/config", response_model=AppConfig)
+async def get_config():
+    return load_app_config()
+
+
+@app.post("/api/config", response_model=AppConfig)
+async def post_config(body: AppConfig):
+    try:
+        save_app_config(body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
+    return body
+
 
 # ---------------------------------------------------------------------------
 # Data mapping helpers
@@ -78,6 +130,32 @@ def _map_candidate(record_id: str, rec) -> dict:
     }
 
 
+def _map_candidate_detail(record_id: str, rec) -> dict:
+    """Extended mapping exposing all extracted profile fields for the detail drawer."""
+    base = _map_candidate(record_id, rec)
+    base.update({
+        "headline": rec.profile.headline or "",
+        "summary": rec.profile.summary or "",
+        "location": rec.profile.location or "",
+        "yearsOfExperience": rec.profile.years_of_experience,
+        "studyDegrees": rec.profile.study_degrees or [],
+        "languagesSpoken": rec.profile.languages_spoken or [],
+        "previousJobs": rec.profile.previous_jobs or [],
+        "projectsDeveloped": rec.profile.projects_developed or [],
+        "allSkills": [s.upper() for s in (rec.profile.technologies_used or [])],
+        "linkedinUrl": rec.identity.linkedin_url or "",
+        "emails": rec.identity.emails or [],
+        "consentBasis": rec.compliance.consent_basis or "",
+        "dataRegion": rec.compliance.data_region or "EEA",
+        "retentionUntil": rec.compliance.retention_until or "",
+        "extractionConfidence": rec.scores.extraction_confidence,
+        "lastMatchScore": rec.scores.last_match_score,
+        "updatedAt": rec.updated_at,
+        "createdAt": rec.created_at,
+    })
+    return base
+
+
 def _candidate_record_ids() -> list[str]:
     seen: set[str] = set()
     record_ids: list[str] = []
@@ -102,6 +180,25 @@ def _candidate_record_ids() -> list[str]:
                 record_ids.append(record_id)
 
     return record_ids
+
+
+def _outreach_signals(rec) -> list[str]:
+    """Derive personalization trigger signals from a candidate record."""
+    signals = []
+    if rec.profile.technologies_used:
+        top = rec.profile.technologies_used[:3]
+        signals.append(f"Tech match: {', '.join(top)}")
+    if rec.profile.years_of_experience:
+        signals.append(f"{rec.profile.years_of_experience} yrs experience")
+    if rec.profile.location:
+        signals.append(f"Location: {rec.profile.location}")
+    if rec.profile.seniority:
+        signals.append(f"Seniority: {rec.profile.seniority}")
+    if rec.profile.study_degrees:
+        signals.append(f"Degree: {rec.profile.study_degrees[0]}")
+    if rec.profile.languages_spoken:
+        signals.append(f"Languages: {', '.join(rec.profile.languages_spoken[:2])}")
+    return signals or ["Profile extracted from CV"]
 
 
 def _map_review_task(case: dict) -> dict:
@@ -141,12 +238,12 @@ def _map_review_task(case: dict) -> dict:
     elif task_type == "OUTREACH_DRAFT":
         rec = load_record(case.get("record_id", ""))
         name = rec.identity.primary_name if rec else case.get("record_id", "")
+        signals = _outreach_signals(rec) if rec else ["Profile extracted from CV"]
         task["outreachDetails"] = {
             "targetName": name,
             "subject": f"Opportunity for {name}",
-            # draft_text is the canonical key set by outreach.py
             "draftBody": case.get("draft_text") or case.get("draft_body", ""),
-            "signals": [],
+            "signals": signals,
         }
     elif task_type == "IDENTITY_CONFLICT":
         rec = load_record(case.get("record_id", ""))
@@ -224,6 +321,14 @@ async def list_candidates():
     return candidates
 
 
+@app.get("/api/candidates/{record_id}")
+async def get_candidate(record_id: str):
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
+    return _map_candidate_detail(record_id, rec)
+
+
 @app.post("/api/candidates/ingest")
 async def ingest_candidate(file: UploadFile = File(...)):
     suffix = Path(file.filename or "upload").suffix.lower()
@@ -248,6 +353,130 @@ async def ingest_candidate(file: UploadFile = File(...)):
     return _map_candidate(record_id, rec)
 
 
+class LinkedInReingestBody(BaseModel):
+    linkedinUrl: str
+
+
+@app.post("/api/candidates/{record_id}/reingest")
+async def reingest_candidate(
+    record_id: str,
+    file: UploadFile = File(...),
+):
+    """
+    Re-ingest an existing candidate with a new CV file (multipart/form-data, field: file).
+    For LinkedIn URL updates use POST /api/candidates/:id/reingest/linkedin.
+    """
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
+
+    suffix = Path(file.filename or "upload").suffix.lower()
+    if suffix not in (".pdf", ".txt"):
+        raise HTTPException(status_code=400, detail="Only .pdf and .txt files are supported")
+
+    cvs_dir = INTAKE_DIR / "cvs"
+    cvs_dir.mkdir(parents=True, exist_ok=True)
+    dest = cvs_dir / f"reingest_{record_id}_{uuid.uuid4().hex[:6]}{suffix}"
+    try:
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        ingest_file(dest, source_type="document_update", force=True)
+    except PermissionError as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail=str(e))
+
+    updated = load_record(record_id)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Record not found after re-ingest")
+    return _map_candidate(record_id, updated)
+
+
+@app.post("/api/candidates/{record_id}/reingest/linkedin")
+async def reingest_candidate_linkedin(record_id: str, body: LinkedInReingestBody):
+    """
+    Update a candidate's stored LinkedIn URL and emit a provenance audit event.
+    Separate route to avoid multipart/JSON body mixing issues in FastAPI.
+    """
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
+
+    linkedin_url = body.linkedinUrl.strip()
+    if not linkedin_url.startswith("https://"):
+        raise HTTPException(status_code=400, detail="linkedinUrl must start with https://")
+
+    now = datetime.utcnow().isoformat() + "Z"
+    old_url = rec.identity.linkedin_url or ""
+    rec.identity.linkedin_url = linkedin_url
+    rec.updated_at = now
+
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "linkedin_url_updated",
+        "timestamp": now,
+        "actor": {"type": "human"},
+        "source": {"record_id": record_id, "source_type": "linkedin_reingest"},
+        "changes": [{
+            "operation": "replace",
+            "path": "/identity/linkedin_url",
+            "old_value": old_url,
+            "new_value": linkedin_url,
+        }],
+        "confidence": 1.0,
+    }
+
+    try:
+        save_record(record_id, rec, event=event)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist record: {e}")
+
+    return _map_candidate(record_id, rec)
+
+
+class StatusPatch(BaseModel):
+    complianceStatus: str
+
+
+@app.patch("/api/candidates/{record_id}/status")
+async def patch_candidate_status(record_id: str, body: StatusPatch):
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
+
+    status = body.complianceStatus.upper().strip()
+
+    if status == "COMPLIANT":
+        rec.compliance.human_review_required = False
+    elif status == "PENDING REVIEW":
+        rec.compliance.human_review_required = True
+    elif status in ("EXPIRING (14D)", "EXPIRING"):
+        pass
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown complianceStatus: '{body.complianceStatus}'")
+
+    rec.updated_at = datetime.utcnow().isoformat() + "Z"
+
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "compliance_status_override",
+        "timestamp": rec.updated_at,
+        "actor": {"type": "human"},
+        "source": {"record_id": record_id},
+        "changes": [{"field": "complianceStatus", "new_value": status}],
+        "confidence": 1.0,
+    }
+
+    try:
+        save_record(record_id, rec, event=event)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to persist record: {str(e)}")
+
+    return _map_candidate(record_id, rec)
+
+
 # ---------------------------------------------------------------------------
 # Job requirement endpoints
 # ---------------------------------------------------------------------------
@@ -264,16 +493,29 @@ class JobCreate(BaseModel):
 
 def _map_job(req_id: str, data: dict) -> dict:
     reqs = data.get("requirements", {})
+    # Read persisted shortlist if available
+    raw_shortlist = data.get("shortlist", [])
+    shortlist = []
+    for item in raw_shortlist:
+        rec = load_record(item.get("record_id", ""))
+        name = rec.identity.primary_name if rec else item.get("candidate_name", "")
+        shortlist.append({
+            "id": item.get("record_id", ""),
+            "name": name,
+            "confidence": item.get("match_score", 0.0),
+            "explanation": "; ".join(item.get("evidence", [])),
+            "status": "pending_review" if item.get("review_required") else "active",
+            "initials": _initials(name),
+        })
     return {
         "id": req_id,
         "title": data.get("title", ""),
-        # support both 'department' (new) and legacy 'description' field
         "department": data.get("department") or data.get("description", ""),
         "location": reqs.get("location", ""),
         "status": "MATCHING",
         "tags": reqs.get("must_have", [])[:2],
-        "candidatesProcessed": 0,
-        "shortlist": [],
+        "candidatesProcessed": data.get("shortlist_meta", {}).get("total_filtered", 0),
+        "shortlist": shortlist,
     }
 
 
@@ -299,8 +541,8 @@ async def create_job(body: JobCreate):
     record = {
         "id": req_id,
         "title": body.title,
-        "department": body.department,   # canonical field
-        "description": body.department,  # legacy compat
+        "department": body.department,
+        "description": body.department,
         "requirements": {
             "must_have": body.must_have,
             "nice_to_have": body.nice_to_have,
@@ -309,6 +551,8 @@ async def create_job(body: JobCreate):
             "category": None,
         },
         "scoring": {},
+        "shortlist": [],
+        "shortlist_meta": {},
         "created_at": now,
         "updated_at": now,
     }
@@ -346,11 +590,9 @@ async def run_shortlist(req_id: str):
             "name": name,
             "confidence": item.get("match_score", 0.0),
             "explanation": "; ".join(item.get("evidence", [])),
-            # types.ts expects: 'drafted' | 'pending_review' | 'active'
             "status": "pending_review" if item.get("review_required") else "active",
             "initials": _initials(name),
         })
-    # Return flat list — matches ShortlistCandidate[] expected by api.ts
     return shortlist
 
 
@@ -376,6 +618,47 @@ async def resolve_review_task(case_id: str, body: ResolveBody):
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"ok": True}
+
+
+class OutreachDraftBody(BaseModel):
+    candidateId: str
+    jobId: str
+    candidateName: str
+    jobTitle: str
+
+
+@app.post("/api/review/outreach-draft")
+async def create_outreach_draft(body: OutreachDraftBody):
+    """
+    Ask the agent to generate a personalised outreach email for a shortlisted
+    candidate + job pairing.  Creates an OUTREACH_DRAFT ReviewTask and returns
+    it immediately so the UI can open it in the ReviewQueue without a reload.
+    """
+    from core.outreach import generate_draft
+
+    existing_cases = get_review_queue()
+    for case in existing_cases:
+        if (
+            case.get("record_id") == body.candidateId
+            and case.get("job_id") == body.jobId
+            and "outreach" in case.get("reason", "")
+            and case.get("status") == "open"
+        ):
+            return _map_review_task(case)
+
+    try:
+        case_id = generate_draft(body.candidateId, body.jobId)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Outreach generation failed: {e}")
+
+    all_cases = get_review_queue()
+    new_case = next((c for c in all_cases if c.get("case_id") == case_id), None)
+    if not new_case:
+        raise HTTPException(status_code=500, detail="Case created but not found in queue")
+
+    return _map_review_task(new_case)
 
 
 # ---------------------------------------------------------------------------
@@ -437,8 +720,12 @@ def _extract_job_params(text: str) -> dict:
         "Python", "JavaScript", "TypeScript", "Java", "React", "Node.js", "AWS", "Go", "Rust",
         "SQL", "Kubernetes", "Docker", "FastAPI", "Django", "Vue", "Angular", "PostgreSQL",
         "MongoDB", "Machine Learning", "LLMs", "NLP", "GCP", "Azure", "C++", "C#",
+        "GDScript", "Godot", "Kotlin", "Swift", "Unity", "Unreal", "Flutter", "Dart",
+        "Redis", "Elasticsearch", "GraphQL", "Terraform", "Ansible", "Spark", "Kafka",
     ]
     found = [s for s in known_skills if re.search(r"\b" + re.escape(s) + r"\b", text, re.IGNORECASE)]
+    if not found:
+        print(f"[chat] Regex skill extraction found no matches for: {text[:80]!r}")
     params["must_have"] = list(dict.fromkeys(found))
     return params
 
@@ -456,7 +743,7 @@ def _format_jobs_list(jobs: list, query: str = "") -> str:
     ] or jobs
     lines = [f"Found **{len(filtered)} job(s)**:\n"]
     for j in filtered[:10]:
-        lines.append(f"- **{j.get('title')}** — {j.get('department', '')} • {j.get('location', '')} `{j.get('status', 'MATCHING')}`")
+        lines.append(f"- **{j.get('title')}** — {j.get('department', '')} \u2022 {j.get('location', '')} `{j.get('status', 'MATCHING')}`")
     return "\n".join(lines)
 
 
@@ -484,7 +771,6 @@ async def gemini_chat(body: _GeminiChatBody):
 
     response_text = ""
 
-    # Import LM Studio helpers added to extract.py
     from core.extract import _configure_genai, _lm_studio_available, _lm_studio_chat, MODEL_NAME
     use_lm_studio = _lm_studio_available()
     llm_ok = use_lm_studio or _configure_genai()
@@ -495,10 +781,10 @@ async def gemini_chat(body: _GeminiChatBody):
             f"System status: {len(candidates)} candidates, {len(jobs)} jobs, {pending_count} pending compliance reviews.\n"
             f"Active jobs: {', '.join(j.get('title','') for j in jobs[:6]) or 'none'}.\n\n"
             f"Capabilities:\n"
-            f"1. CREATE JOBS — if user wants to create/add a job, include this marker on its own line before your explanation:\n"
+            f"1. CREATE JOBS \u2014 if user wants to create/add a job, include this marker on its own line before your explanation:\n"
             f'   [ACTION:CREATE_JOB] {{"title":"...","department":"...","location":"...","must_have":["..."],"nice_to_have":["..."]}}\n'
-            f"2. SEARCH JOBS — list matching jobs from the active list above.\n"
-            f"3. GENERAL — answer questions about candidates, compliance, GDPR, outreach.\n\n"
+            f"2. SEARCH JOBS \u2014 list matching jobs from the active list above.\n"
+            f"3. GENERAL \u2014 answer questions about candidates, compliance, GDPR, outreach.\n\n"
             f"Be concise and professional."
         )
 
@@ -585,7 +871,7 @@ async def gemini_chat(body: _GeminiChatBody):
             if pending_tasks:
                 lines = [f"**{len(pending_tasks)} pending compliance task(s):**\n"]
                 for t in pending_tasks[:5]:
-                    lines.append(f"- `{t.get('id','')[:8]}` — {t.get('type','UNKNOWN').replace('_',' ')}")
+                    lines.append(f"- `{t.get('id','')[:8]}` \u2014 {t.get('type','UNKNOWN').replace('_',' ')}")
                 response_text = "\n".join(lines)
             else:
                 response_text = "No pending compliance tasks. The candidate pool is fully compliant."

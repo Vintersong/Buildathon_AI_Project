@@ -205,3 +205,28 @@ export function sendAssistantMessage(
     json('POST', { messages, context }),
   );
 }
+
+// ---------------------------------------------------------------------------
+// CSV bulk ingest
+// ---------------------------------------------------------------------------
+
+export interface CSVIngestProgress {
+  total: number;
+  processed: number;
+  skipped: number;
+  failed: number;
+  errors: { row: number; error: string }[];
+  done: boolean;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export async function startCSVIngest(file: File): Promise<{ task_id: string }> {
+  const form = new FormData();
+  form.append('file', file);
+  return request<{ task_id: string }>(`${BASE}/intake/csv`, { method: 'POST', body: form });
+}
+
+export function pollCSVIngest(taskId: string): Promise<CSVIngestProgress> {
+  return request<CSVIngestProgress>(`${BASE}/intake/csv/${taskId}`);
+}

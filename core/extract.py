@@ -44,14 +44,65 @@ def _lm_studio_available() -> bool:
         return False
 
 
+# Minimal json_schema schemas for LM Studio's response_format
+# LM Studio only accepts 'json_schema' or 'text' — 'json_object' is not supported.
+_RERANK_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "rerank_result",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "match_score": {"type": "number"},
+                "evidence": {"type": "array", "items": {"type": "string"}},
+                "uncertainty_flags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["match_score", "evidence", "uncertainty_flags"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+_EXTRACTION_JSON_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "candidate_extraction",
+        "strict": False,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": ["string", "null"]},
+                "emails": {"type": "array", "items": {"type": "string"}},
+                "phones": {"type": "array", "items": {"type": "string"}},
+                "linkedin_url": {"type": ["string", "null"]},
+                "seniority": {"type": ["string", "null"]},
+                "years_of_experience": {"type": ["integer", "null"]},
+                "study_degrees": {"type": "array", "items": {"type": "string"}},
+                "technologies_used": {"type": "array", "items": {"type": "string"}},
+                "languages_spoken": {"type": "array", "items": {"type": "string"}},
+                "location": {"type": ["string", "null"]},
+                "previous_jobs": {"type": "array", "items": {"type": "string"}},
+                "projects_developed": {"type": "array", "items": {"type": "string"}},
+                "summary": {"type": ["string", "null"]},
+                "extraction_confidence": {"type": "number"},
+                "review_flags": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["extraction_confidence"],
+        },
+    },
+}
+
+
 def _lm_studio_chat(messages: list, json_mode: bool = False) -> str:
     """
     Send a chat completion request to LM Studio (OpenAI-compatible endpoint)
     and return the assistant's text response.
 
-    `json_mode=True` adds `response_format={"type":"json_object"}` so the local
-    model is constrained to emit valid JSON — required by extract.py / match.py
-    which then `json.loads()` the response.
+    `json_mode=True` adds a `response_format` constrained to JSON schema output.
+    LM Studio only accepts 'json_schema' or 'text' — 'json_object' is rejected
+    with a 400 error. The schema used depends on the calling context; for
+    generic JSON mode (e.g. rerank) we use the rerank schema.
     """
     try:
         from openai import OpenAI
@@ -61,7 +112,7 @@ def _lm_studio_chat(messages: list, json_mode: bool = False) -> str:
     client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio")
     kwargs = {"model": LM_STUDIO_MODEL, "messages": messages, "temperature": 0.2}
     if json_mode:
-        kwargs["response_format"] = {"type": "json_object"}
+        kwargs["response_format"] = _RERANK_JSON_SCHEMA
     resp = client.chat.completions.create(**kwargs)
     return resp.choices[0].message.content
 
@@ -101,11 +152,23 @@ def _extract_via_lm_studio(source_text: str, anon) -> Tuple["CandidateExtraction
     `source_text` is the original (non-anonymized) text used only to build `anon`
     at the call site; `anon.anonymized_text` is what actually gets sent to the LLM.
     """
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError("The 'openai' package is required for LM Studio support. Install requirements.txt.") from exc
+    from .config import LM_STUDIO_MODEL, LM_STUDIO_BASE_URL
+    client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio")
     messages = [
         {"role": "system", "content": "You are a precise HR data extraction assistant. " + _LM_STUDIO_EXTRACT_SCHEMA},
         {"role": "user", "content": f"Extract candidate profile from the following text:\n\n{anon.anonymized_text}"},
     ]
-    raw_json = _lm_studio_chat(messages, json_mode=True)
+    resp = client.chat.completions.create(
+        model=LM_STUDIO_MODEL,
+        messages=messages,
+        temperature=0.2,
+        response_format=_EXTRACTION_JSON_SCHEMA,
+    )
+    raw_json = resp.choices[0].message.content
     parsed_dict = json.loads(raw_json)
 
     for field in ("name", "linkedin_url", "location", "summary"):

@@ -230,7 +230,12 @@ def _map_candidate(record_id: str, rec) -> dict:
         "imageInitials": _initials(rec.identity.primary_name),
         "seniority": rec.profile.seniority or "Unknown",
         "topSkills": [s.upper() for s in (rec.profile.technologies_used or [])[:3]],
-        "matchScore": rec.scores.last_match_score or rec.scores.identity_confidence or 0.0,
+        "matchScore": (
+            rec.scores.last_match_score
+            or rec.scores.identity_confidence
+            or rec.scores.extraction_confidence
+            or 0.0
+        ),
         "complianceStatus": _compliance_status(rec),
         "actionsRequired": rec.compliance.human_review_required,
     }

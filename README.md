@@ -99,26 +99,32 @@ This mode runs the model on your own machine via LM Studio’s local server.
 
 ### 4.2 Point this project at LM Studio
 
-1. Open `config.json` in the repo root.
-2. Look for fields related to the model provider, for example:
+1. Open `config.json` in the repo root and set `use_local_llm` to `true`:
 
-   ```jsonc
+   ```json
    {
-     "model_backend": "lmstudio",
-     "lmstudio": {
-       "base_url": "http://localhost:1234/v1",
-       "model": "your-model-name"
-     }
+     "model": "google/gemma-4-e4b",
+     "confidence_threshold": 0.85,
+     "sovereign_cloud": true,
+     "use_local_llm": true
    }
    ```
 
-   Adjust field names to match the existing schema in `config.json` (do not invent new keys; reuse what’s there).
+2. Make sure the `model` value matches the model ID shown in LM Studio (check the **Local Server** tab — it lists the loaded model ID).
 
-3. Make sure:
-   - `base_url` matches the LM Studio server URL.
-   - `model` matches the model name LM Studio displays for your running server.
+3. If LM Studio is running on a non-default port, set the env var before starting the backend:
 
-4. Save `config.json`.
+   ```powershell
+   # Windows
+   $env:LM_STUDIO_BASE_URL="http://localhost:1234/v1"
+   $env:LM_STUDIO_MODEL="google/gemma-4-e4b"
+   ```
+
+   ```bash
+   # Linux / macOS
+   export LM_STUDIO_BASE_URL="http://localhost:1234/v1"
+   export LM_STUDIO_MODEL="google/gemma-4-e4b"
+   ```
 
 ### 4.3 Run the backend with LM Studio
 
@@ -135,62 +141,57 @@ Once the backend is running all model calls go to LM Studio’s local server wit
 
 ---
 
-## 5. Using a hosted API key (OpenAI-style)
+## 5. Using a Gemini API key (no LM Studio required)
 
-Instead of LM Studio, you can also use a hosted LLM provider via an API key.
+Instead of LM Studio you can use Google Gemini via an API key.
 
-### 5.1 Get an API key
+### 5.1 Get a Gemini API key
 
-1. Register with your chosen provider (e.g., OpenAI, Anthropic, etc.).
-2. Create an API key in their dashboard.
-3. **Never commit this key** to version control.
+1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey) and create a key.
+2. **Never commit this key** to version control — the project keeps it out of `config.json` automatically.
 
-### 5.2 Export the API key as an environment variable
+### 5.2 Set the key
+
+**Option A — Settings UI (recommended):**
+
+1. Start the backend (see section 4.3).
+2. Open `http://127.0.0.1:8080` → **Settings**.
+3. Paste the key into the **Gemini API key** field and save.
+
+The key is stored in `.secrets.json` at the project root (gitignored) and takes effect immediately without a restart.
+
+**Option B — environment variable:**
 
 On Linux / macOS:
-
 ```bash
-export OPENAI_API_KEY="your-key-here"
+export GEMINI_API_KEY="your-key-here"
 ```
 
 On Windows (PowerShell):
-
 ```powershell
-$env:OPENAI_API_KEY="your-key-here"
+$env:GEMINI_API_KEY="your-key-here"
 ```
 
-Adjust the environment variable name to match what the code expects (for example `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, etc.), based on how the project reads configuration in `core/`.
+### 5.3 Switch to Gemini in `config.json`
 
-### 5.3 Configure `config.json` for API mode
-
-Open `config.json` and switch to an API provider configuration, for example:
-
-```jsonc
+```json
 {
-  "model_backend": "openai",
-  "openai": {
-    "base_url": "https://api.openai.com/v1",
-    "model": "gpt-4.1-mini"
-  }
+  "model": "gemini-2.5-flash",
+  "confidence_threshold": 0.85,
+  "sovereign_cloud": false,
+  "use_local_llm": false
 }
 ```
 
-Use the existing structure in `config.json` as a template and only change values (not the general schema). Typical fields:
+The key change is `"use_local_llm": false` — that routes all model calls through Gemini instead of LM Studio.
 
-- `model_backend` – string switch indicating which backend to use.
-- Provider-specific section (`openai`, `anthropic`, etc.) – base URL and model name.
-
-The backend will combine `config.json` with your environment variables when making requests.
-
-### 5.4 Run the backend with hosted API
-
-With your environment variable set and `config.json` pointing to the API provider:
+### 5.4 Run the backend with Gemini
 
 ```bash
 python -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-Requests will now be sent to the hosted API instead of LM Studio.
+Requests will now go to Gemini instead of LM Studio.
 
 ---
 
@@ -229,18 +230,16 @@ Open `http://localhost:5173` — it proxies API calls to the backend on port 808
 
 ---
 
-## 7. Switching between LM Studio and API mode
+## 7. Switching between LM Studio and Gemini
 
-To switch back and forth:
+The only field that controls which backend is used is `use_local_llm` in `config.json`:
 
-1. Stop the backend.
-2. Edit `config.json`:
-   - Set `"model_backend"` to `"lmstudio"` for local LM Studio.
-   - Set `"model_backend"` to `"openai"` (or the relevant provider string) for hosted API.
-3. Start or stop LM Studio’s local server as needed.
-4. Ensure the correct environment variables are set for hosted API mode.
+| Mode | `use_local_llm` | Requires |
+|---|---|---|
+| LM Studio | `true` | LM Studio running on port 1234 |
+| Gemini | `false` | `GEMINI_API_KEY` env var or key set in Settings UI |
 
-You do not need to change code when switching; configuration and environment variables are sufficient, as long as you follow the existing `config.json` schema and the expected env var names used by the code in `core/`.
+You can also toggle this from the **Settings** page in the UI without editing the file manually.
 
 ---
 
@@ -264,7 +263,6 @@ Exit code `0` = pass, `1` = below target, `2` = startup error.
 ---
 
 ## 9. Troubleshooting
-
 
 
 - **Backend cannot reach model**  

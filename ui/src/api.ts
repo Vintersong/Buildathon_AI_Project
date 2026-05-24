@@ -123,8 +123,8 @@ export function deleteJob(reqId: string): Promise<{ deleted: string }> {
   return request<{ deleted: string }>(`${BASE}/jobs/${reqId}`, { method: 'DELETE' });
 }
 
-export function runShortlist(reqId: string): Promise<ShortlistCandidate[]> {
-  return request<ShortlistCandidate[]>(`${BASE}/jobs/${reqId}/shortlist`, { method: 'POST' });
+export function runShortlist(reqId: string, topN = 5): Promise<ShortlistCandidate[]> {
+  return request<ShortlistCandidate[]>(`${BASE}/jobs/${reqId}/shortlist?top_n=${topN}`, { method: 'POST' });
 }
 
 export function fetchReviewTasks(): Promise<ReviewTask[]> {

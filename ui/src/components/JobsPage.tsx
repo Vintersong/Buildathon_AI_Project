@@ -42,6 +42,7 @@ export default function JobsPage({
   const [saving, setSaving] = useState(false);
   const [runningId, setRunningId] = useState<string | null>(null);
   const [draftingId, setDraftingId] = useState<string | null>(null);
+  const [topN, setTopN] = useState(5);
 
   const filteredJobs = useMemo(() => {
     return searchQuery.trim() ? jobs.filter((job) => matchesQuery(job, searchQuery.trim())) : jobs;
@@ -80,7 +81,7 @@ export default function JobsPage({
   const runShortlist = async (job: JobRequirement) => {
     setRunningId(job.id);
     try {
-      const rows = await api.runShortlist(job.id);
+      const rows = await api.runShortlist(job.id, topN);
       onToast(`Shortlist generated with ${rows.length} candidate${rows.length === 1 ? '' : 's'}.`);
       await onRefresh();
     } catch (error) {
@@ -194,7 +195,18 @@ export default function JobsPage({
                   ))}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="flex items-center gap-2 text-sm text-slate-600">
+                  <span className="whitespace-nowrap">Top N</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={topN}
+                    onChange={(e) => setTopN(Math.max(1, Math.min(100, Number(e.target.value) || 5)))}
+                    className="h-10 w-20 rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                  />
+                </label>
                 <button
                   type="button"
                   onClick={() => runShortlist(selectedJob)}

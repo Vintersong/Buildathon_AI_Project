@@ -1,5 +1,6 @@
 {
-  "model": "gemini-2.5-flash",
+  "model": "google/gemma-4-e4b",
   "confidence_threshold": 0.85,
-  "sovereign_cloud": false
+  "sovereign_cloud": true,
+  "use_local_llm": true
 }

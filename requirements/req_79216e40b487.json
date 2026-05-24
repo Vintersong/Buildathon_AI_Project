@@ -1,0 +1,78 @@
+{
+  "id": "req_79216e40b487",
+  "title": "Senior Python Engineer",
+  "department": "Engineering",
+  "description": "Engineering",
+  "requirements": {
+    "must_have": [
+      "Python",
+      "FastAPI"
+    ],
+    "nice_to_have": [],
+    "location": "Remote",
+    "language": [],
+    "category": null
+  },
+  "scoring": {},
+  "shortlist": [
+    {
+      "record_id": "cand_980f7f565002",
+      "candidate_name": "Jennifer Johnson",
+      "match_score": 0.3748,
+      "evidence": [
+        "Exact skill match: python"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    },
+    {
+      "record_id": "cand_ff4f2f58f7a4",
+      "candidate_name": "James Johnson",
+      "match_score": 0.3684,
+      "evidence": [
+        "Exact skill match: python"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    },
+    {
+      "record_id": "cand_65189a921870",
+      "candidate_name": "Susan Garcia",
+      "match_score": 0.3526,
+      "evidence": [
+        "Exact skill match: python"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    },
+    {
+      "record_id": "cand_7684d708586f",
+      "candidate_name": "Robert Williams",
+      "match_score": 0.3409,
+      "evidence": [
+        "Exact skill match: python"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    },
+    {
+      "record_id": "cand_43eff8a573f4",
+      "candidate_name": "Susan Johnson",
+      "match_score": 0.3378,
+      "evidence": [
+        "Exact skill match: python"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    }
+  ],
+  "shortlist_meta": {
+    "funnel_size": 15,
+    "total_filtered": 20,
+    "generated_at": "2026-05-24T11:11:05.184300Z"
+  },
+  "status": "MATCHING",
+  "tags": [],
+  "created_at": "2026-05-24T11:10:00.161919Z",
+  "updated_at": "2026-05-24T11:10:00.161919Z"
+}

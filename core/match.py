@@ -169,9 +169,10 @@ def score_embeddings(candidates: List[str], req: RequirementRecord) -> Dict[str,
         rec = load_record(c_id)
         if not rec:
             continue
+        # Guard against legacy records where list fields may be None
         cand_text = (
             f"{rec.profile.headline or ''}. {rec.profile.summary or ''} "
-            "Skills: " + " ".join(rec.profile.technologies_used) +
+            "Skills: " + " ".join(rec.profile.technologies_used or []) +
             " Jobs: " + " ".join(rec.profile.previous_jobs or [])
         )
         cand_emb = get_embedding(cand_text)
@@ -310,7 +311,7 @@ def generate_shortlist(
     req_skills = set(s.lower() for s in req.requirements.must_have + req.requirements.nice_to_have)
 
     def _keyword_evidence(rec: CandidateRecord) -> list[str]:
-        cand_skills = set(s.lower() for s in rec.profile.technologies_used)
+        cand_skills = set(s.lower() for s in (rec.profile.technologies_used or []))
         exact = req_skills & cand_skills
         return [f"Exact skill match: {s}" for s in sorted(exact)]
 

@@ -1,12 +1,11 @@
 import { FormEvent, useMemo, useState } from 'react';
 import { Briefcase, Loader2, MailPlus, Play, Plus, Trash2 } from 'lucide-react';
 import * as api from '../api';
-import { JobRequirement, ReviewTask, ShortlistCandidate } from '../types';
+import { JobRequirement, ShortlistCandidate } from '../types';
 import { Screen } from './Sidebar';
 
 interface JobsPageProps {
   jobs: JobRequirement[];
-  reviewTasks: ReviewTask[];
   searchQuery: string;
   onRefresh: () => Promise<void>;
   onToast: (message: string, type?: 'success' | 'info' | 'error') => void;

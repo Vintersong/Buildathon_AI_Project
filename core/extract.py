@@ -94,9 +94,13 @@ exactly as they appear — do not invent or modify them.
 """.strip()
 
 
-def _extract_via_lm_studio(_raw_text: str, anon) -> Tuple[CandidateExtraction, Dict[str, Any]]:
+def _extract_via_lm_studio(source_text: str, anon) -> Tuple["CandidateExtraction", Dict[str, Any]]:
     """Run extraction through LM Studio. Mirrors the Gemini path's anonymization
-    and rehydration so callers get an identical CandidateExtraction back."""
+    and rehydration so callers get an identical CandidateExtraction back.
+
+    `source_text` is the original (non-anonymized) text used only to build `anon`
+    at the call site; `anon.anonymized_text` is what actually gets sent to the LLM.
+    """
     messages = [
         {"role": "system", "content": "You are a precise HR data extraction assistant. " + _LM_STUDIO_EXTRACT_SCHEMA},
         {"role": "user", "content": f"Extract candidate profile from the following text:\n\n{anon.anonymized_text}"},
@@ -142,7 +146,7 @@ def get_extraction_model():
     )
 
 
-def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, Any]]:
+def extract_candidate_data(text: str) -> Tuple["CandidateExtraction", Dict[str, Any]]:
     """
     Extract structured candidate data from raw text.
 
@@ -254,7 +258,7 @@ _DEGREE_RE = re.compile(
 )
 
 
-def extract_candidate_data_heuristic(text: str) -> Tuple[CandidateExtraction, Dict[str, Any]]:
+def extract_candidate_data_heuristic(text: str) -> Tuple["CandidateExtraction", Dict[str, Any]]:
     """
     Pure-local regex/keyword extraction — no external API calls.
     Used when ENABLE_EXTERNAL_LLM is False or GEMINI_API_KEY is absent.

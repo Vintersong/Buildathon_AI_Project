@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, DatabaseZap, FolderSync, Loader2, RotateCcw, ShieldCheck } from 'lucide-react';
+import { Activity, AlertCircle, DatabaseZap, FolderSync, Loader2, RotateCcw, ShieldCheck } from 'lucide-react';
 import * as api from '../api';
 import { AuditEvent, Candidate, ReviewTask, StaleCandidate } from '../types';
 
@@ -9,6 +9,12 @@ interface MaintenancePageProps {
   auditEvents: AuditEvent[];
   onRefresh: () => Promise<void>;
   onToast: (message: string, type?: 'success' | 'info' | 'error') => void;
+}
+
+function formatComplianceStatus(raw: string): string {
+  if (raw === 'PENDING REVIEW') return 'Pending Review';
+  if (raw === 'EXPIRING (14D)') return 'Expiring (14d)';
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
 }
 
 export default function MaintenancePage({
@@ -22,6 +28,7 @@ export default function MaintenancePage({
   const [stale, setStale] = useState<StaleCandidate[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loadingStale, setLoadingStale] = useState(false);
+  const [staleScanError, setStaleScanError] = useState<string | null>(null);
   const [processing, setProcessing] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [intakeLimit, setIntakeLimit] = useState(25);
@@ -34,13 +41,16 @@ export default function MaintenancePage({
 
   const scanStale = async () => {
     setLoadingStale(true);
+    setStaleScanError(null);
     try {
       const result = await api.fetchStaleCandidates(months);
       setStale(result.candidates);
       setSelected(new Set());
       onToast(`Found ${result.candidates.length} stale profile${result.candidates.length === 1 ? '' : 's'}.`, 'info');
     } catch (error) {
-      onToast(error instanceof Error ? error.message : 'Stale scan failed', 'error');
+      const msg = error instanceof Error ? error.message : 'Stale scan failed';
+      setStaleScanError(msg);
+      onToast(msg, 'error');
     } finally {
       setLoadingStale(false);
     }
@@ -193,29 +203,46 @@ export default function MaintenancePage({
           </div>
 
           <div className="divide-y divide-slate-100">
-            {stale.map((candidate) => (
-              <label key={candidate.id} className="flex cursor-pointer items-start gap-4 p-4 hover:bg-slate-50">
-                <input
-                  type="checkbox"
-                  checked={selected.has(candidate.id)}
-                  onChange={() => toggle(candidate.id)}
-                  className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-cyan-500"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-semibold text-slate-950">{candidate.name}</p>
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{candidate.complianceStatus}</span>
+            {staleScanError ? (
+              <div className="flex flex-col items-center gap-2 p-10 text-center">
+                <AlertCircle className="h-7 w-7 text-red-400" />
+                <p className="text-sm font-medium text-slate-700">Stale scan could not load.</p>
+                <p className="text-sm text-slate-500">{staleScanError}</p>
+                <button
+                  type="button"
+                  onClick={scanStale}
+                  className="mt-2 inline-flex h-9 items-center gap-2 rounded-md border border-slate-200 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"
+                >
+                  <RotateCcw className="h-4 w-4" /> Retry
+                </button>
+              </div>
+            ) : (
+              stale.map((candidate) => (
+                <label key={candidate.id} className="flex cursor-pointer items-start gap-4 p-4 hover:bg-slate-50">
+                  <input
+                    type="checkbox"
+                    checked={selected.has(candidate.id)}
+                    onChange={() => toggle(candidate.id)}
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-cyan-500"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-semibold text-slate-950">{candidate.name}</p>
+                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
+                        {formatComplianceStatus(candidate.complianceStatus)}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm text-slate-500">{candidate.seniority || 'Unknown seniority'} - updated {candidate.updatedAt || 'unknown'}</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {candidate.topSkills.slice(0, 4).map((skill) => (
+                        <span key={skill} className="rounded-full bg-cyan-50 px-2 py-1 text-xs font-medium text-cyan-800">{skill}</span>
+                      ))}
+                    </div>
                   </div>
-                  <p className="mt-1 text-sm text-slate-500">{candidate.seniority || 'Unknown seniority'} - updated {candidate.updatedAt || 'unknown'}</p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {candidate.topSkills.slice(0, 4).map((skill) => (
-                      <span key={skill} className="rounded-full bg-cyan-50 px-2 py-1 text-xs font-medium text-cyan-800">{skill}</span>
-                    ))}
-                  </div>
-                </div>
-              </label>
-            ))}
-            {stale.length === 0 && (
+                </label>
+              ))
+            )}
+            {!staleScanError && stale.length === 0 && (
               <div className="p-10 text-center">
                 <p className="text-sm font-medium text-slate-700">No stale candidates found for this threshold.</p>
                 <p className="mt-1 text-sm text-slate-500">Adjust the month window or process intake for new profiles.</p>

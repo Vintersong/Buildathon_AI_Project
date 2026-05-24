@@ -1111,16 +1111,27 @@ async def gemini_chat(body: _GeminiChatBody):
     use_lm_studio = local_requested and _lm_studio_available()
     llm_ok = use_lm_studio or ((not local_requested) and _configure_genai())
 
+    full_records: list[dict] = []
+    for record_id in _candidate_record_ids():
+        rec = load_record(record_id)
+        if rec and not rec.state.archived:
+            full_records.append(_map_candidate_detail(record_id, rec))
+
     if llm_ok:
+        records_block = json.dumps(full_records, default=str, ensure_ascii=False)
         system_prompt = (
             f"You are the Linnify AI Talent Pool Manager assistant.\n\n"
-            f"System status: {len(candidates)} candidates, {len(jobs)} jobs, {pending_count} pending compliance reviews.\n"
+            f"System status: {len(full_records)} candidates, {len(jobs)} jobs, {pending_count} pending compliance reviews.\n"
             f"Active jobs: {', '.join(j.get('title','') for j in jobs[:6]) or 'none'}.\n\n"
+            f"Full candidate records (from records/ folder) \u2014 use these to answer any question about\n"
+            f"candidates' skills, experience, education, location, previous jobs, projects, languages,\n"
+            f"compliance, contact info, scores, etc.:\n"
+            f"{records_block}\n\n"
             f"Capabilities:\n"
             f"1. CREATE JOBS \u2014 if user wants to create/add a job, include this marker on its own line before your explanation:\n"
             f'   [ACTION:CREATE_JOB] {{"title":"...","department":"...","location":"...","must_have":["..."],"nice_to_have":["..."]}}\n'
             f"2. SEARCH JOBS \u2014 list matching jobs from the active list above.\n"
-            f"3. GENERAL \u2014 answer questions about candidates, compliance, GDPR, outreach.\n\n"
+            f"3. GENERAL \u2014 answer questions about candidates, compliance, GDPR, outreach using the full records above.\n\n"
             f"Be concise and professional."
         )
 

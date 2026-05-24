@@ -8,7 +8,7 @@ import {
   AlertTriangle, Clock, MoreVertical, CheckCircle, History,
   Shield, UserPlus, Microscope, Search, X, Filter, ExternalLink,
   ChevronRight, Briefcase, GraduationCap, Globe, Languages, Layers,
-  Calendar, Loader2, MapPin, RefreshCw, CheckSquare,
+  Calendar, Loader2, MapPin, RefreshCw, CheckSquare, Inbox,
 } from 'lucide-react';
 import { Candidate, CandidateDetail, AuditEvent, ReviewTask } from '../types';
 import * as api from '../api';
@@ -20,6 +20,10 @@ interface CandidatePoolProps {
   onNavigate: (screen: 'candidates' | 'jobs' | 'review' | 'audit' | 'settings') => void;
   onOpenReviewTask: (taskId: string) => void;
   onResolveCandidateDirectly: (id: string, newStatus: Candidate['complianceStatus']) => void;
+  /** Reconcile an orphaned PENDING REVIEW flag when no pending task exists. */
+  onClearCandidateReviewFlag?: (id: string) => void;
+  /** Refetch candidates + everything after a backend bulk action. */
+  onPoolRefreshed?: () => void;
   onBulkRefresh?: (ids: string[]) => Promise<void>;
   onCandidateUpdated?: (updated: Candidate) => void;
   recentLogs: AuditEvent[];
@@ -175,6 +179,8 @@ export default function CandidatePool({
   onNavigate,
   onOpenReviewTask,
   onResolveCandidateDirectly,
+  onClearCandidateReviewFlag,
+  onPoolRefreshed,
   onBulkRefresh,
   onCandidateUpdated,
   recentLogs,
@@ -188,6 +194,11 @@ export default function CandidatePool({
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
   const [minMatchScore, setMinMatchScore] = useState<number>(0);
   const [currentPage, setCurrentPage] = useState(1);
+  // Bulk intake processing state
+  const [intakeRunning, setIntakeRunning] = useState(false);
+  const [intakeBatch, setIntakeBatch] = useState<number>(25);
+  const [intakeSummary, setIntakeSummary] = useState<string | null>(null);
+  const [intakeError, setIntakeError] = useState<string | null>(null);
   const [openActionCandidateId, setOpenActionCandidateId] = useState<string | null>(null);
   const [drawerCandidateId, setDrawerCandidateId] = useState<string | null>(null);
 
@@ -338,6 +349,30 @@ export default function CandidatePool({
     setOpenActionCandidateId(null);
   };
 
+  /**
+   * Bulk-ingest CVs sitting in intake/cvs/. Server caps the batch size; the
+   * UI exposes 25 / 50 / 100 presets. Re-runs are cheap (manifest dedup),
+   * so it's safe to keep clicking until total_intake == processed+skipped.
+   */
+  const handleProcessIntake = useCallback(async () => {
+    if (intakeRunning) return;
+    setIntakeRunning(true);
+    setIntakeError(null);
+    setIntakeSummary(null);
+    try {
+      const res = await api.processIntake(intakeBatch);
+      const remaining = res.total_intake - res.processed - res.skipped;
+      setIntakeSummary(
+        `Processed ${res.processed}, skipped ${res.skipped} (dedup), failed ${res.failed}. ${remaining} file${remaining === 1 ? '' : 's'} still in intake.`
+      );
+      onPoolRefreshed?.();
+    } catch (e: unknown) {
+      setIntakeError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIntakeRunning(false);
+    }
+  }, [intakeRunning, intakeBatch, onPoolRefreshed]);
+
   const handleOpenReingest = (candidate: Candidate) => {
     setOpenActionCandidateId(null);
     setReingestTarget({
@@ -407,6 +442,50 @@ export default function CandidatePool({
             <span className="text-xs font-mono font-bold text-status-ok">Jobs →</span>
           </div>
         </div>
+      </section>
+
+      {/* Intake processing bar — bulk-ingest CVs sitting in intake/cvs/ */}
+      <section className="flex flex-wrap items-center justify-between gap-3 p-4 bg-white border border-border-subtle rounded">
+        <div className="flex items-center gap-3 min-w-0">
+          <Inbox className="w-5 h-5 text-slate-deep shrink-0" />
+          <div className="min-w-0">
+            <div className="text-xs font-bold uppercase tracking-wider text-on-surface">Intake Folder</div>
+            <div className="text-[11px] font-sans text-on-surface-variant truncate">
+              Bulk-ingest CVs from <code className="font-mono">intake/cvs/</code>. Dedup is automatic — re-run until the counter reaches zero.
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <label htmlFor="intake-batch-size" className="text-[10px] font-bold uppercase tracking-wider text-on-surface-variant">Batch</label>
+          <select
+            id="intake-batch-size"
+            value={intakeBatch}
+            onChange={(e) => setIntakeBatch(Number(e.target.value))}
+            disabled={intakeRunning}
+            className="px-2 py-1.5 border border-border-subtle rounded text-xs bg-white cursor-pointer disabled:opacity-50"
+          >
+            <option value={10}>10</option>
+            <option value={25}>25</option>
+            <option value={50}>50</option>
+            <option value={100}>100</option>
+            <option value={500}>500 (max)</option>
+          </select>
+          <button
+            type="button"
+            onClick={handleProcessIntake}
+            disabled={intakeRunning}
+            className="flex items-center gap-2 bg-primary text-on-primary px-4 py-1.5 rounded text-xs font-bold hover:opacity-90 transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {intakeRunning ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <UserPlus className="w-3.5 h-3.5" />}
+            <span>{intakeRunning ? 'Ingesting…' : 'Process Intake'}</span>
+          </button>
+        </div>
+        {intakeSummary && (
+          <div className="basis-full text-[11px] font-mono text-status-ok">{intakeSummary}</div>
+        )}
+        {intakeError && (
+          <div className="basis-full text-[11px] font-mono text-status-error">Intake failed: {intakeError}</div>
+        )}
       </section>
 
       {/* Filters */}
@@ -516,8 +595,10 @@ export default function CandidatePool({
         </div>
       </section>
 
-      {/* Main Table */}
-      <section className="bg-white border border-border-subtle rounded overflow-hidden">
+      {/* Main Table — overflow-visible (not -hidden) so per-row action menus
+          can escape the rounded panel; rounded corners on the table are
+          handled by the table's own header background instead. */}
+      <section className="bg-white border border-border-subtle rounded">
 
         {selectedIds.size > 0 && (
           <div id="bulk-action-toolbar"
@@ -546,7 +627,9 @@ export default function CandidatePool({
           </div>
         )}
 
-        <div className="overflow-x-auto">
+        {/* No overflow-x-auto here: it forces overflow-y to auto in most
+            browsers, which would clip the per-row action dropdown menus. */}
+        <div>
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="bg-surface-container border-b border-border-subtle">
@@ -645,6 +728,18 @@ export default function CandidatePool({
                               t.outreachDetails?.targetName === candidate.name
                             )
                           );
+                          // No pending task → orphaned PENDING REVIEW flag.
+                          // Offer to clear it instead of leaving a dead button.
+                          if (!task && onClearCandidateReviewFlag) {
+                            return (
+                              <button id={`resolve-btn-${candidate.id}`}
+                                onClick={() => onClearCandidateReviewFlag(candidate.id)}
+                                title="No pending review task — clear stale flag"
+                                className="px-3 py-1 bg-amber-500 text-white font-mono text-[10px] tracking-wider font-bold hover:bg-amber-600 cursor-pointer rounded">
+                                CLEAR FLAG
+                              </button>
+                            );
+                          }
                           return (
                             <button id={`resolve-btn-${candidate.id}`}
                               onClick={() => task && onOpenReviewTask(task.id)}
@@ -713,14 +808,13 @@ export default function CandidatePool({
         <div className="md:col-span-2 p-8 border border-border-subtle bg-slate-deep text-white relative overflow-hidden rounded-md flex flex-col justify-between min-h-[290px]">
           <div className="relative z-10 space-y-3">
             <div className="text-[10px] tracking-widest font-bold text-amber-500 font-mono uppercase">Ingestion Quality Metrics</div>
-            <div className="text-2xl font-bold max-w-lg leading-tight">Automated Precision is at 98.4%</div>
+            <div className="text-2xl font-bold max-w-lg leading-tight"></div>
             <p className="text-sm text-slate-300 max-w-md font-sans leading-relaxed">
-              Our high-confidence ledger heuristics successfully verified 1,204 candidate profiles this week with only 14 requiring manual human intervention rules.
             </p>
           </div>
           <div className="relative z-10 flex gap-8 pt-6 border-t border-white/10 mt-6 font-mono">
-            <div><div className="font-bold text-xl text-white">1.4s</div><div className="text-[10px] tracking-wider text-slate-400 mt-1 uppercase">AVG PROCESSING TIME</div></div>
-            <div><div className="font-bold text-xl text-white">0.02%</div><div className="text-[10px] tracking-wider text-slate-400 mt-1 uppercase">MAPPING ERROR RATE</div></div>
+            <div><div className="font-bold text-xl text-white"></div><div className="text-[10px] tracking-wider text-slate-400 mt-1 uppercase"></div></div>
+            <div><div className="font-bold text-xl text-white"></div><div className="text-[10px] tracking-wider text-slate-400 mt-1 uppercase"></div></div>
           </div>
           <div className="absolute right-4 bottom-4 opacity-10 select-none pointer-events-none">
             <Microscope className="w-48 h-48 text-white" strokeWidth={1} />

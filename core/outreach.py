@@ -6,25 +6,24 @@ try:
 except ImportError:
     genai = None
 
-from .config import GEMINI_API_KEY, ENABLE_EXTERNAL_OUTREACH_LLM
+from .config import get_active_api_key, get_active_model, get_use_local_llm, LM_STUDIO_MODEL
 from .store import load_record
 from .match import _load_requirement
 from .review import add_to_queue
 from .compliance import record_block_reasons
 from .security import anonymize_candidate_record, rehydrate_text
 
-if genai and GEMINI_API_KEY and ENABLE_EXTERNAL_OUTREACH_LLM:
-    genai.configure(api_key=GEMINI_API_KEY)
-
-# Fixed: gemini-3.5-flash does not exist; use gemini-1.5-flash
-MODEL_NAME = "gemini-1.5-flash"
+DEFAULT_OUTREACH_MODEL = "gemini-2.5-flash"
 
 
 def get_draft_model():
     if not genai:
         raise ValueError("google-generativeai is not installed")
+    key = get_active_api_key()
+    if key:
+        genai.configure(api_key=key)
     return genai.GenerativeModel(
-        model_name=MODEL_NAME,
+        model_name=get_active_model(DEFAULT_OUTREACH_MODEL),
         system_instruction=(
             "You are an expert technical recruiter writing an outreach email. "
             "The email should be professional, personalized, and highlight why the candidate's specific background is a great fit for the role. "
@@ -49,7 +48,10 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
     job = _load_requirement(job_id)
 
     generation_mode = "template"
-    if ENABLE_EXTERNAL_OUTREACH_LLM and GEMINI_API_KEY and genai:
+    draft_text = None
+    use_local = get_use_local_llm()
+
+    if use_local or (get_active_api_key() and genai):
         anonymized = anonymize_candidate_record(candidate, candidate_id)
         prompt = (
             "Write an outreach email to CANDIDATE_001. "
@@ -59,12 +61,30 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
             f"Candidate Background:\n{anonymized.anonymized_text}\n\n"
             "Draft the email now:"
         )
-        model = get_draft_model()
-        response = model.generate_content(prompt)
-        # Rehydrate only the CANDIDATE token so the real name appears in the draft
-        draft_text = rehydrate_text(response.text, anonymized.mapping, allowed={"CANDIDATE"})
-        generation_mode = "external_llm"
-    else:
+        try:
+            if use_local:
+                from .extract import _lm_studio_chat, _lm_studio_available
+                if not _lm_studio_available():
+                    raise RuntimeError("LM Studio unreachable")
+                resp_text = _lm_studio_chat(
+                    [
+                        {"role": "system", "content": "You are an expert technical recruiter writing a concise, personalized outreach email."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    json_mode=False,
+                )
+                draft_text = rehydrate_text(resp_text, anonymized.mapping, allowed={"CANDIDATE"})
+                generation_mode = "local_llm"
+            else:
+                model = get_draft_model()
+                response = model.generate_content(prompt)
+                draft_text = rehydrate_text(response.text, anonymized.mapping, allowed={"CANDIDATE"})
+                generation_mode = "external_llm"
+        except Exception as e:
+            print(f"[outreach] LLM draft failed for {candidate_id}: {e}")
+            draft_text = None
+
+    if draft_text is None:
         draft_text = _template_draft(candidate, job)
 
     case_id = f"review_{uuid.uuid4().hex[:12]}"
@@ -76,7 +96,11 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
         "created_at": datetime.utcnow().isoformat() + "Z",
         "status": "open",
         "draft_text": draft_text,
-        "model_used": MODEL_NAME if generation_mode == "external_llm" else "local_template_v1",
+        "model_used": (
+            get_active_model(DEFAULT_OUTREACH_MODEL) if generation_mode == "external_llm"
+            else LM_STUDIO_MODEL if generation_mode == "local_llm"
+            else "local_template_v1"
+        ),
         "generation_mode": generation_mode,
     }
 

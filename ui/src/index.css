@@ -26,6 +26,12 @@
   
   --color-on-surface: #0b1c30;
   --color-on-surface-variant: #45464d;
+
+  /* Brand alias: many components use bg-primary / text-primary / text-on-primary.
+     Without these, Tailwind v4 silently drops the rule (e.g. "Create New Job"
+     button renders white-on-white and disappears). */
+  --color-primary: #0F172A;          /* same hue as slate-deep */
+  --color-on-primary: #FFFFFF;
 }
 
 body {

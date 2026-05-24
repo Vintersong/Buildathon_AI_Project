@@ -1,0 +1,23 @@
+{
+  "id": "req_8b21b6e0687d",
+  "title": "Test",
+  "department": "Fintech Core Platform",
+  "description": "Fintech Core Platform",
+  "requirements": {
+    "must_have": [],
+    "nice_to_have": [],
+    "location": "Austin/Remote",
+    "language": [],
+    "category": null
+  },
+  "scoring": {},
+  "shortlist": [],
+  "shortlist_meta": {},
+  "status": "MATCHING",
+  "tags": [
+    "MATCHING",
+    "NEW"
+  ],
+  "created_at": "2026-05-24T08:30:42.462719Z",
+  "updated_at": "2026-05-24T08:30:42.462719Z"
+}

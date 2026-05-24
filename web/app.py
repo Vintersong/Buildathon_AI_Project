@@ -24,9 +24,12 @@ from core.config import (
     REQUIREMENTS_DIR,
     RECORD_INDEX_PATH,
     INTAKE_DIR,
+    get_active_api_key_last4,
+    has_user_api_key,
+    set_active_api_key,
 )
 from core.ingest import ingest_file
-from core.review import get_review_queue, resolve_case
+from core.review import get_review_queue, resolve_case, has_open_cases, _clear_record_review_hold
 from core.events import log_event
 from core.schemas import CandidateRecord, Identity, Profile, Compliance, Scores
 
@@ -56,26 +59,42 @@ async def legacy_candidates_page(request: Request):
 
 CONFIG_PATH = project_root / "config.json"
 
-CONFIG_DEFAULTS = {
-    "model": "gemini-2.5-flash",
-    "confidence_threshold": 0.85,
-    "sovereign_cloud": False,
-}
-
 
 class AppConfig(BaseModel):
+    """Persisted app config (committed to config.json).
+
+    The Gemini API key lives in .secrets.json (gitignored) and is never
+    serialized here. Use AppConfigResponse / AppConfigUpdate for transport.
+    """
     model: str = Field(default="gemini-2.5-flash")
     confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     sovereign_cloud: bool = Field(default=False)
+    use_local_llm: bool = Field(default=False)
+
+
+class AppConfigResponse(AppConfig):
+    """Read shape — exposes whether a user key is set and its last-4 only."""
+    gemini_api_key_set: bool = False
+    gemini_api_key_last4: Optional[str] = None
+
+
+class AppConfigUpdate(AppConfig):
+    """Write shape — optional plaintext key.
+
+    - None  → leave key as-is
+    - ""    → clear the stored key
+    - other → save as the new active key
+    """
+    gemini_api_key: Optional[str] = None
 
 
 def load_app_config() -> AppConfig:
     try:
         with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return AppConfig(**{**CONFIG_DEFAULTS, **data})
+        return AppConfig(**data)
     except (FileNotFoundError, json.JSONDecodeError, Exception):
-        return AppConfig(**CONFIG_DEFAULTS)
+        return AppConfig()
 
 
 def save_app_config(cfg: AppConfig) -> None:
@@ -88,18 +107,42 @@ def save_app_config(cfg: AppConfig) -> None:
         tmp.replace(CONFIG_PATH)
 
 
-@app.get("/api/config", response_model=AppConfig)
+def _config_response() -> AppConfigResponse:
+    base = load_app_config()
+    return AppConfigResponse(
+        **base.model_dump(),
+        gemini_api_key_set=has_user_api_key(),
+        gemini_api_key_last4=get_active_api_key_last4() if has_user_api_key() else None,
+    )
+
+
+@app.get("/api/config", response_model=AppConfigResponse)
 async def get_config():
-    return load_app_config()
+    return _config_response()
 
 
-@app.post("/api/config", response_model=AppConfig)
-async def post_config(body: AppConfig):
+@app.get("/api/lm-studio/status")
+async def lm_studio_status():
+    """Probe the local LM Studio server. Used by the Settings page to show a
+    live green/red badge next to the 'Use Local LLM' toggle."""
+    from core.extract import _lm_studio_available
+    from core.config import LM_STUDIO_MODEL, LM_STUDIO_BASE_URL
+    return {
+        "available": _lm_studio_available(),
+        "model": LM_STUDIO_MODEL,
+        "base_url": LM_STUDIO_BASE_URL,
+    }
+
+
+@app.post("/api/config", response_model=AppConfigResponse)
+async def post_config(body: AppConfigUpdate):
     try:
-        save_app_config(body)
+        save_app_config(AppConfig(**body.model_dump(exclude={"gemini_api_key"})))
+        if body.gemini_api_key is not None:
+            set_active_api_key(body.gemini_api_key.strip() or None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
-    return body
+    return _config_response()
 
 
 class LinkedInPreviewBody(BaseModel):
@@ -381,6 +424,53 @@ async def get_candidate(record_id: str):
     return _map_candidate_detail(record_id, rec)
 
 
+@app.post("/api/intake/process")
+async def process_intake(limit: int = 25):
+    """
+    Walk intake/cvs/ and ingest every .pdf / .txt that isn't already in the
+    manifest. Capped by `limit` (default 25) to protect API quotas; raise it
+    explicitly when you know you have headroom.
+
+    Returns {processed, skipped, failed, errors, total_intake, attempted}.
+    """
+    cvs_dir = INTAKE_DIR / "cvs"
+    if not cvs_dir.exists():
+        return {"processed": 0, "skipped": 0, "failed": 0, "errors": [], "total_intake": 0, "attempted": 0}
+
+    candidates = sorted(
+        p for p in cvs_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in (".pdf", ".txt")
+    )
+    total = len(candidates)
+    limit = max(1, min(limit, 500))  # hard cap to prevent runaway
+
+    processed, skipped, failed = 0, 0, 0
+    errors: list[dict] = []
+
+    for path in candidates[:limit]:
+        try:
+            before = len(list(RECORDS_DIR.glob("*.json"))) if RECORDS_DIR.exists() else 0
+            ingest_file(path, source_type="document")
+            after = len(list(RECORDS_DIR.glob("*.json"))) if RECORDS_DIR.exists() else 0
+            # Heuristic: if record count didn't change, it was a dedup hit.
+            if after > before:
+                processed += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            failed += 1
+            errors.append({"file": path.name, "error": str(e)[:200]})
+
+    return {
+        "processed": processed,
+        "skipped": skipped,
+        "failed": failed,
+        "errors": errors[:10],  # cap to keep response small
+        "total_intake": total,
+        "attempted": min(limit, total),
+    }
+
+
 @app.post("/api/candidates/ingest")
 async def ingest_candidate(file: UploadFile = File(...)):
     suffix = Path(file.filename or "upload").suffix.lower()
@@ -549,10 +639,29 @@ async def patch_candidate_status(record_id: str, body: StatusPatch):
 
     status = body.complianceStatus.upper().strip()
 
+    queued_case_id: Optional[str] = None
     if status == "COMPLIANT":
         rec.compliance.human_review_required = False
+        # Also clear a near-expiry retention date so `_compliance_status()`
+        # actually returns COMPLIANT. Without this, marking an EXPIRING
+        # candidate compliant silently reverts on the next read because
+        # retention_until is still within the 14-day window.
+        rec.compliance.retention_until = None
     elif status == "PENDING REVIEW":
         rec.compliance.human_review_required = True
+        # Also enqueue a review case so the candidate actually appears in the
+        # review queue. Without this, the flag is set but no task exists, and
+        # the RESOLVE button on the candidate row has nothing to open.
+        if not has_open_cases(record_id):
+            from core.review import add_to_queue
+            queued_case_id = f"review_{uuid.uuid4().hex[:12]}"
+            add_to_queue([{
+                "case_id": queued_case_id,
+                "record_id": record_id,
+                "reason": "manual_review_requested",
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "status": "open",
+            }])
     elif status in ("EXPIRING (14D)", "EXPIRING"):
         rec.compliance.retention_until = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
     else:
@@ -618,6 +727,39 @@ def _map_job(req_id: str, data: dict) -> dict:
         "candidatesProcessed": data.get("shortlist_meta", {}).get("total_filtered", 0),
         "shortlist": shortlist,
     }
+
+
+@app.post("/api/candidates/{record_id}/clear-review-flag")
+async def clear_candidate_review_flag(record_id: str):
+    """
+    Reconcile orphaned PENDING REVIEW state: clear human_review_required when
+    no open review cases reference the candidate. Used by the UI RESOLVE button
+    when the resolved-on-disk cases left the candidate flag stuck on.
+    """
+    rec = load_record(record_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    if has_open_cases(record_id):
+        raise HTTPException(
+            status_code=409,
+            detail="Open review cases exist for this candidate. Resolve them via the review queue.",
+        )
+    if rec.compliance.human_review_required:
+        _clear_record_review_hold(record_id, reviewer="ui_manual_reconcile")
+        rec = load_record(record_id)
+    return _map_candidate(record_id, rec)
+
+
+@app.delete("/api/jobs/{req_id}")
+async def delete_job(req_id: str):
+    path = REQUIREMENTS_DIR / f"{req_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+    try:
+        path.unlink()
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete job: {e}")
+    return {"deleted": req_id}
 
 
 @app.get("/api/jobs")

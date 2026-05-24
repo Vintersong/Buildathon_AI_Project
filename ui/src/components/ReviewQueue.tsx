@@ -366,7 +366,7 @@ export default function ReviewQueue({
         <div className="flex justify-between items-center mb-6 select-none font-sans">
           <div className="flex items-center gap-2">
             <Terminal className="w-5 h-5 text-on-surface-variant" />
-            <h3 className="font-sans font-bold text-sm text-primary">Live Review Session Trail</h3>
+            <h3 className="font-sans font-bold text-sm text-primary">Session Log</h3>
           </div>
           <button
             onClick={() => onNavigate('audit')}
@@ -379,7 +379,7 @@ export default function ReviewQueue({
         <div className="bg-slate-deep text-white p-6 font-mono text-[12px] rounded-md space-y-2.5 shadow-xl">
           {liveTrail.length === 0 ? (
             <div className="flex gap-4 opacity-50">
-              <span className="text-amber-400">ACTION: Human decision engine fully synchronized. Awaiting input for active session...</span>
+              <span className="text-amber-400"></span>
             </div>
           ) : (
             liveTrail.map((evt, i) => (

@@ -14,9 +14,9 @@ Target: >= 0.85 overall accuracy.
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
+from core.config import get_active_api_key, get_active_model
 from core.extract import extract_candidate_data
 
 
@@ -46,7 +46,11 @@ def _eval_with_llm(predicted_str: str, expected_str: str, field: str) -> float:
         from langchain_google_genai import ChatGoogleGenerativeAI
         from langchain.evaluation import load_evaluator
 
-        llm = ChatGoogleGenerativeAI(model="gemini-3.5-flash", temperature=0)
+        llm = ChatGoogleGenerativeAI(
+            model=get_active_model("gemini-2.5-flash"),
+            google_api_key=get_active_api_key(),
+            temperature=0,
+        )
         evaluator = load_evaluator("criteria", criteria="correctness", llm=llm)
         result = evaluator.evaluate_strings(
             prediction=predicted_str,
@@ -83,7 +87,7 @@ def evaluate_extraction(
         dict with keys: accuracy, target, pass, per_field, details, llm_mode
     """
     if use_llm is None:
-        use_llm = bool(os.getenv("GEMINI_API_KEY"))
+        use_llm = bool(get_active_api_key())
 
     results: list[dict[str, Any]] = []
 

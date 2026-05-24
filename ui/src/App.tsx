@@ -181,6 +181,39 @@ export default function App() {
     }
   };
 
+  // 3b. Delete Job Requirement
+  const handleDeleteJob = async (jobId: string, jobTitle: string) => {
+    markSyncing();
+    try {
+      await api.deleteJob(jobId);
+      setJobs((prev) => prev.filter((j) => j.id !== jobId));
+      triggerToast(`Job '${jobTitle}' deleted.`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      triggerToast(`Delete job failed: ${msg}`, 'error');
+    } finally {
+      setIsSynced(true);
+    }
+  };
+
+  // 3c. Clear orphaned PENDING REVIEW flag on a candidate (no open cases)
+  const handleClearCandidateReviewFlag = async (candidateId: string) => {
+    markSyncing();
+    try {
+      const updated = await api.clearCandidateReviewFlag(candidateId);
+      setCandidates((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+      triggerToast(`Cleared stale review flag for ${updated.name}.`);
+      // Pull fresh review tasks + audit so the dashboard counts and audit log
+      // reflect the reconciliation immediately (not just the candidate row).
+      refreshAll();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      triggerToast(`Clear flag failed: ${msg}`, 'error');
+    } finally {
+      setIsSynced(true);
+    }
+  };
+
   // 4. Direct compliance override — B1 fix: capture oldStatus before optimistic update
   const handleResolveCandidateDirectly = async (
     id: string,
@@ -284,6 +317,8 @@ export default function App() {
               onNavigate={(sc) => { setActiveScreen(sc); setSearchQuery(''); }}
               onOpenReviewTask={(taskId) => { setFocusedTaskId(taskId); setActiveScreen('review'); }}
               onResolveCandidateDirectly={handleResolveCandidateDirectly}
+              onClearCandidateReviewFlag={handleClearCandidateReviewFlag}
+              onPoolRefreshed={refreshAll}
               onCandidateUpdated={(updated) => {
                 setCandidates((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
                 refreshAll();
@@ -300,6 +335,8 @@ export default function App() {
               onNavigate={(sc) => { setActiveScreen(sc); setSearchQuery(''); }}
               onOpenReviewTask={(taskId) => { setFocusedTaskId(taskId); setActiveScreen('review'); }}
               onAddJob={handleAddJob}
+              onDeleteJob={handleDeleteJob}
+              onJobsRefreshed={refreshAll}
               reviewTasks={reviewTasks}
               onOutreachDraftCreated={(task) => {
                 setReviewTasks((prev) => prev.some((t) => t.id === task.id) ? prev : [task, ...prev]);

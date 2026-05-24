@@ -25,6 +25,20 @@ export function ingestCandidate(file: File): Promise<Candidate> {
   return request<Candidate>(`${BASE}/candidates/ingest`, { method: 'POST', body: form });
 }
 
+export interface IntakeProcessResult {
+  processed: number;
+  skipped: number;
+  failed: number;
+  errors: { file: string; error: string }[];
+  total_intake: number;
+  attempted: number;
+}
+
+/** Bulk-ingest everything in intake/cvs/. Capped server-side by `limit`. */
+export function processIntake(limit = 25): Promise<IntakeProcessResult> {
+  return request<IntakeProcessResult>(`${BASE}/intake/process?limit=${limit}`, { method: 'POST' });
+}
+
 export function ingestLinkedInCandidate(linkedinUrl: string): Promise<Candidate> {
   return request<Candidate>(`${BASE}/candidates/ingest/linkedin`, {
     method: 'POST',
@@ -64,6 +78,18 @@ export function patchCandidateStatus(
 
 export function fetchJobs(): Promise<JobRequirement[]> {
   return request<JobRequirement[]>(`${BASE}/jobs`);
+}
+
+export function deleteJob(reqId: string): Promise<{ deleted: string }> {
+  return request<{ deleted: string }>(`${BASE}/jobs/${reqId}`, { method: 'DELETE' });
+}
+
+/**
+ * Clear an orphaned PENDING REVIEW flag on a candidate when no pending
+ * review tasks reference them. Backend refuses (409) if open cases still exist.
+ */
+export function clearCandidateReviewFlag(id: string): Promise<Candidate> {
+  return request<Candidate>(`${BASE}/candidates/${id}/clear-review-flag`, { method: 'POST' });
 }
 
 export function createJob(
@@ -124,13 +150,43 @@ export interface AppConfig {
   model: string;
   confidence_threshold: number;
   sovereign_cloud: boolean;
+  /** When true, the backend routes extract/match/outreach through LM Studio. */
+  use_local_llm: boolean;
+  /** True iff a user-supplied API key is stored in .secrets.json. */
+  gemini_api_key_set: boolean;
+  /** Last 4 chars of the stored key, or null if none. */
+  gemini_api_key_last4: string | null;
+}
+
+/**
+ * Write shape. `gemini_api_key` is optional:
+ *  - omit / undefined → leave key as-is
+ *  - ""               → clear stored key
+ *  - non-empty        → save as new key
+ */
+export interface AppConfigUpdate {
+  model: string;
+  confidence_threshold: number;
+  sovereign_cloud: boolean;
+  use_local_llm: boolean;
+  gemini_api_key?: string;
+}
+
+export interface LmStudioStatus {
+  available: boolean;
+  model: string;
+  base_url: string;
+}
+
+export function fetchLmStudioStatus(): Promise<LmStudioStatus> {
+  return request<LmStudioStatus>(`${BASE}/lm-studio/status`);
 }
 
 export function fetchConfig(): Promise<AppConfig> {
   return request<AppConfig>(`${BASE}/config`);
 }
 
-export function saveConfig(cfg: AppConfig): Promise<AppConfig> {
+export function saveConfig(cfg: AppConfigUpdate): Promise<AppConfig> {
   return request<AppConfig>(`${BASE}/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

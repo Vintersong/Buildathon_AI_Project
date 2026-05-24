@@ -6,22 +6,18 @@ from pydantic import ValidationError
 from datetime import datetime
 import uuid
 
-from .config import GEMINI_API_KEY, QUARANTINE_DIR
+from .config import QUARANTINE_DIR, get_use_local_llm, LM_STUDIO_MODEL
 from .schemas import CandidateExtraction
 from .security import anonymize_candidate_text, rehydrate_text
 
 # Feature flag — when False the external LLM call is skipped and the
 # heuristic fallback is used instead (safe for air-gapped / no-key deploys).
 import os
+from .config import get_active_api_key, get_active_model
+
 ENABLE_EXTERNAL_LLM = os.getenv("ENABLE_EXTERNAL_LLM", "true").lower() == "true"
 
-# Configure Gemini
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-else:
-    print("Warning: GEMINI_API_KEY not found in environment.")
-
-MODEL_NAME = "gemini-1.5-flash"
+DEFAULT_EXTRACT_MODEL = "gemini-2.5-flash"
 
 
 # ---------------------------------------------------------------------------
@@ -29,8 +25,12 @@ MODEL_NAME = "gemini-1.5-flash"
 # ---------------------------------------------------------------------------
 
 def _configure_genai() -> bool:
-    """Return True if Gemini is configured and an API key is available."""
-    return bool(GEMINI_API_KEY)
+    """Configure Gemini with the currently-active key. Returns True on success."""
+    key = get_active_api_key()
+    if not key:
+        return False
+    genai.configure(api_key=key)
+    return True
 
 
 def _lm_studio_available() -> bool:
@@ -43,18 +43,22 @@ def _lm_studio_available() -> bool:
         return False
 
 
-def _lm_studio_chat(messages: list) -> str:
+def _lm_studio_chat(messages: list, json_mode: bool = False) -> str:
     """
     Send a chat completion request to LM Studio (OpenAI-compatible endpoint)
     and return the assistant's text response.
+
+    `json_mode=True` adds `response_format={"type":"json_object"}` so the local
+    model is constrained to emit valid JSON — required by extract.py / match.py
+    which then `json.loads()` the response.
     """
     from openai import OpenAI
-    client = OpenAI(base_url="http://localhost:1234/v1", api_key="lm-studio")
-    resp = client.chat.completions.create(
-        model="local-model",
-        messages=messages,
-        temperature=0.2,
-    )
+    from .config import LM_STUDIO_MODEL, LM_STUDIO_BASE_URL
+    client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio")
+    kwargs = {"model": LM_STUDIO_MODEL, "messages": messages, "temperature": 0.2}
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    resp = client.chat.completions.create(**kwargs)
     return resp.choices[0].message.content
 
 
@@ -62,9 +66,67 @@ def _lm_studio_chat(messages: list) -> str:
 # Extraction model
 # ---------------------------------------------------------------------------
 
+_LM_STUDIO_EXTRACT_SCHEMA = """
+Return a JSON object with exactly these keys:
+  name: string or null
+  emails: array of strings
+  phones: array of strings
+  linkedin_url: string or null
+  seniority: one of "Intern", "Junior", "Mid", "Senior", "Lead", "Principal", "Staff", or null
+  years_of_experience: integer or null
+  study_degrees: array of strings (each "<level> <field>, <institution>")
+  technologies_used: array of strings (skills, frameworks, languages)
+  languages_spoken: array of strings (spoken languages, not programming)
+  location: string or null
+  previous_jobs: array of strings (each "<title> at <company>")
+  projects_developed: array of strings
+  summary: string or null (1-3 sentence summary)
+  extraction_confidence: float between 0.0 and 1.0
+  review_flags: array of strings (any concerns worth human review; empty if none)
+
+Use [] for missing arrays and null for missing scalars. Preserve any
+CANDIDATE_001 / EMAIL_001 / PHONE_001 / LINKEDIN_001 anonymization tokens
+exactly as they appear — do not invent or modify them.
+""".strip()
+
+
+def _extract_via_lm_studio(_raw_text: str, anon) -> Tuple[CandidateExtraction, Dict[str, Any]]:
+    """Run extraction through LM Studio. Mirrors the Gemini path's anonymization
+    and rehydration so callers get an identical CandidateExtraction back."""
+    messages = [
+        {"role": "system", "content": "You are a precise HR data extraction assistant. " + _LM_STUDIO_EXTRACT_SCHEMA},
+        {"role": "user", "content": f"Extract candidate profile from the following text:\n\n{anon.anonymized_text}"},
+    ]
+    raw_json = _lm_studio_chat(messages, json_mode=True)
+    parsed_dict = json.loads(raw_json)
+
+    for field in ("name", "linkedin_url", "location", "summary"):
+        if isinstance(parsed_dict.get(field), str):
+            parsed_dict[field] = rehydrate_text(
+                parsed_dict[field], anon.mapping, allowed=set(anon.mapping.keys())
+            )
+    for list_field in ("emails", "phones"):
+        if isinstance(parsed_dict.get(list_field), list):
+            parsed_dict[list_field] = [
+                rehydrate_text(v, anon.mapping, allowed=set(anon.mapping.keys()))
+                if isinstance(v, str) else v
+                for v in parsed_dict[list_field]
+            ]
+
+    extraction = CandidateExtraction(**parsed_dict)
+    provenance = {
+        "provider": "lm_studio",
+        "model": LM_STUDIO_MODEL,
+        "schema": "CandidateExtraction_v1",
+        "anonymized": True,
+    }
+    return extraction, provenance
+
+
 def get_extraction_model():
+    _configure_genai()
     return genai.GenerativeModel(
-        model_name=MODEL_NAME,
+        model_name=get_active_model(DEFAULT_EXTRACT_MODEL),
         system_instruction=(
             "You are a precise HR data extraction assistant. "
             "Extract information from the provided resume/profile text into the exact requested JSON schema. "
@@ -87,11 +149,23 @@ def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, An
     Returns the parsed CandidateExtraction object and model provenance info.
     Raises ValueError if extraction fails or validation fails.
     """
-    if not ENABLE_EXTERNAL_LLM or not GEMINI_API_KEY:
+    if not ENABLE_EXTERNAL_LLM:
+        return extract_candidate_data_heuristic(text)
+
+    use_local = get_use_local_llm()
+    if not use_local and not get_active_api_key():
         return extract_candidate_data_heuristic(text)
 
     # --- Anonymise before sending to external LLM ---
     anon = anonymize_candidate_text(text)
+
+    # Local LM Studio path — bypass Gemini entirely.
+    if use_local:
+        if not _lm_studio_available():
+            # Local route requested but server is down — degrade gracefully.
+            return extract_candidate_data_heuristic(text)
+        return _extract_via_lm_studio(text, anon)
+
     model = get_extraction_model()
 
     try:
@@ -124,7 +198,7 @@ def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, An
 
         provenance_model_info = {
             "provider": "google",
-            "model": MODEL_NAME,
+            "model": get_active_model(DEFAULT_EXTRACT_MODEL),
             "schema": "CandidateExtraction_v1",
             "anonymized": True,
         }
@@ -138,7 +212,13 @@ def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, An
         _quarantine_failed_output(text, getattr(response, "text", ""), "schema_validation_error")
         raise ValueError(f"Extracted JSON did not match required schema: {str(e)}")
     except Exception as e:
-        raise ValueError(f"Extraction failed: {str(e)}")
+        # Transient API failures (quota, network, server errors) shouldn't kill
+        # the ingest — degrade to the heuristic extractor so the candidate is
+        # still imported, just with lower-confidence fields.
+        msg = str(e)
+        if any(s in msg for s in ("429", "quota", "503", "504", "RESOURCE_EXHAUSTED", "timeout", "deadline")):
+            return extract_candidate_data_heuristic(text)
+        raise ValueError(f"Extraction failed: {msg}")
 
 
 # ---------------------------------------------------------------------------

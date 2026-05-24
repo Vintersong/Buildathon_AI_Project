@@ -1,5 +1,7 @@
 _reference
 .env*
+.secrets.json
+.secrets.json.tmp
 __pycache__/
 *.py[cod]
 venv/

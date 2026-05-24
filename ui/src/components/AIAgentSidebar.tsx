@@ -27,8 +27,8 @@ const DEFAULT_MESSAGES: Message[] = [
     content: `Hello! I am the **Bloodhound AI Copilot**.
 
 I have real-time access to the talent pool and job matrix. You can ask me to:
-- **Create jobs**: "Create a job for a Senior Python Developer in Berlin"
-- **Search jobs**: "Find all remote engineering roles"
+- **Create jobs**: "Create a job for a Senior Python Developer in Berlin."
+- **Search jobs**: "Find all remote engineering roles."
 - **Audit compliance**: "What GDPR tasks are pending?"
 - **Pool overview**: "How many candidates do we have?"`,
     timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -149,7 +149,7 @@ export default function AIAgentSidebar({
         role: 'assistant',
         content: `❌ **Service Connection Alert**
         
-Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is configured in the settings secrets pane.
+Unable to connect to the backend agent server. Verify your \`API_KEY\` is configured in the settings secrets pane.
 
 *Technical: ${err.message || String(err)}*`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -243,9 +243,9 @@ Unable to connect to the backend agent server. Verify your \`GEMINI_API_KEY\` is
           </div>
           <div>
             <h3 className="font-sans font-bold text-sm leading-tight text-white flex items-center gap-1.5">
-              <span>Bloodhound AI Copilot</span>
+              <span>Bloodhound</span>
             </h3>
-            <p className="text-[10px] text-white/65 font-mono">MODEL SHARD: GEMINI-2.5-FLASH</p>
+            <p className="text-[10px] text-white/65 font-mono">BLODDHOUND AI</p>
           </div>
         </div>
 

@@ -5,10 +5,18 @@ from typing import List, Dict, Any, Tuple
 from datetime import datetime
 import google.generativeai as genai
 
-from .config import RECORDS_DIR, REQUIREMENTS_DIR, GEMINI_API_KEY
+from .config import RECORDS_DIR, REQUIREMENTS_DIR, get_active_api_key, get_active_model, get_use_local_llm
 from .schemas import CandidateRecord, RequirementRecord
 from .store import load_record
 from .math_utils import get_embedding, cosine_similarity, calculate_keyword_overlap
+
+# When sentence-transformers is not installed, fall back to keyword overlap so
+# Run Shortlist still produces a useful ranking in demos / lightweight envs.
+try:
+    from .math_utils import SentenceTransformer as _ST  # type: ignore
+    _EMBEDDINGS_AVAILABLE = _ST is not None
+except ImportError:
+    _EMBEDDINGS_AVAILABLE = False
 from .security import anonymize_candidate_record, rehydrate_text
 from .compliance import record_block_reasons
 
@@ -19,10 +27,7 @@ ENABLE_EXTERNAL_LLM = os.getenv("ENABLE_EXTERNAL_LLM", "true").lower() == "true"
 # Override via RERANK_FUNNEL_SIZE env var or the app config.
 DEFAULT_RERANK_FUNNEL_SIZE = int(os.getenv("RERANK_FUNNEL_SIZE", "15"))
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
-MODEL_NAME = "gemini-1.5-pro"
+DEFAULT_RERANK_MODEL = "gemini-2.5-pro"
 
 
 def _scoring_weights(req: RequirementRecord) -> Dict[str, float]:
@@ -53,8 +58,11 @@ def score_keywords(candidates: List[str], req: RequirementRecord) -> Dict[str, f
 
 
 def get_rerank_model():
+    key = get_active_api_key()
+    if key:
+        genai.configure(api_key=key)
     return genai.GenerativeModel(
-        model_name=MODEL_NAME,
+        model_name=get_active_model(DEFAULT_RERANK_MODEL),
         system_instruction=(
             "You are an expert technical recruiter evaluating candidates against a job requirement. "
             "The candidate text you receive is anonymized — do not attempt to identify the person. "
@@ -84,21 +92,32 @@ def _get_all_active_candidates() -> List[str]:
     return candidates
 
 
+_LOCATION_WILDCARDS = ("remote", "any", "anywhere", "worldwide", "global", "hybrid")
+
+
 def filter_candidates(candidates: List[str], req: RequirementRecord) -> List[str]:
     """Stage 1: Compliance + location filter.
 
     Uses record_block_reasons() to enforce consent, retention, and other
     compliance flags so non-consented candidates are never surfaced.
-    Location filtering is soft: skipped if either side has no location data.
+
+    Location filtering is soft:
+      - Skipped when either side has no location data.
+      - Skipped when the requirement's location is a wildcard like "Remote",
+        "Hybrid", or "Anywhere" — those don't constrain the candidate's city.
+      - Otherwise a substring match is required (e.g. "London" matches "London, UK").
     """
     passed = []
     req_location = req.requirements.location.lower() if req.requirements.location else None
+    is_wildcard_location = req_location is not None and any(
+        w in req_location for w in _LOCATION_WILDCARDS
+    )
 
     for c_id in candidates:
         rec = load_record(c_id)
         if not rec or record_block_reasons(rec, c_id):
             continue
-        if req_location and rec.profile.location:
+        if req_location and not is_wildcard_location and rec.profile.location:
             if req_location not in rec.profile.location.lower():
                 continue
         passed.append(c_id)
@@ -112,13 +131,32 @@ def score_embeddings(candidates: List[str], req: RequirementRecord) -> Dict[str,
     Replaces keyword overlap as the primary ranking signal. Embeddings capture
     semantic equivalence (Python ↔ GDScript, Kotlin ↔ Java, etc.) that exact
     keyword matching misses entirely.
+
+    Falls back to keyword overlap scoring when sentence-transformers isn't
+    installed — quality drops, but the pipeline still produces a ranking.
     """
     req_text = (
         f"{req.title}. {req.description or ''} "
         "Requirements: " + " ".join(req.requirements.must_have + req.requirements.nice_to_have)
     )
-    req_emb = get_embedding(req_text)
 
+    if not _EMBEDDINGS_AVAILABLE:
+        # Keyword fallback — score by overlap between requirement text and
+        # candidate's headline+summary+skills+jobs corpus.
+        scores: Dict[str, float] = {}
+        for c_id in candidates:
+            rec = load_record(c_id)
+            if not rec:
+                continue
+            cand_text = (
+                f"{rec.profile.headline or ''} {rec.profile.summary or ''} "
+                + " ".join(rec.profile.technologies_used or [])
+                + " " + " ".join(rec.profile.previous_jobs or [])
+            )
+            scores[c_id] = calculate_keyword_overlap(req_text, cand_text)
+        return scores
+
+    req_emb = get_embedding(req_text)
     scores = {}
     for c_id in candidates:
         rec = load_record(c_id)
@@ -226,16 +264,40 @@ def generate_shortlist(
     # Stage 3: Structured dimension multipliers
     struct_scores = score_structured(filtered, req)
 
-    # Combine: embedding score * freshness multiplier
+    # Combine: embedding score * freshness, with a structured fallback when
+    # the requirement is too vague for keywords/embeddings to differentiate
+    # (e.g. no must_have skills). Without the fallback, every candidate
+    # scores 0 and the "top 5" is just whoever sorts first alphabetically.
+    SENIORITY_RANK = {
+        "intern": 0.10, "junior": 0.25, "mid": 0.45,
+        "senior": 0.65, "lead": 0.80, "principal": 0.90, "staff": 0.85,
+    }
+
+    def _structured_fallback(rec) -> float:
+        skills = len(rec.profile.technologies_used or [])
+        years = rec.profile.years_of_experience or 0
+        sen = (rec.profile.seniority or "").strip().lower()
+        sen_score = SENIORITY_RANK.get(sen, 0.30)
+        # Weighted blend: 50% seniority, 25% experience (capped at 15y),
+        # 25% skill count (capped at 10). All bounded in [0, 1].
+        return min(1.0, 0.5 * sen_score + 0.25 * min(years, 15) / 15 + 0.25 * min(skills, 10) / 10)
+
     combined = []
     for c_id in filtered:
         s_emb = emb_scores.get(c_id, 0.0)
         s_struct = struct_scores.get(c_id, {})
         freshness = s_struct.get("freshness", 1.0)
-        final_score = s_emb * freshness
+        if s_emb < 0.05:
+            rec = load_record(c_id)
+            base = _structured_fallback(rec) if rec else 0.0
+        else:
+            base = s_emb
+        final_score = base * freshness
         combined.append((c_id, final_score))
 
-    combined.sort(key=lambda x: x[1], reverse=True)
+    # Sort by score desc, then by record_id desc as a deterministic tiebreaker
+    # (still arbitrary but no longer "alphabetically first always wins").
+    combined.sort(key=lambda x: (x[1], x[0]), reverse=True)
 
     # Keyword overlap computed for evidence metadata only — not for ranking
     req_skills = set(s.lower() for s in req.requirements.must_have + req.requirements.nice_to_have)
@@ -244,6 +306,17 @@ def generate_shortlist(
         cand_skills = set(s.lower() for s in rec.profile.technologies_used)
         exact = req_skills & cand_skills
         return [f"Exact skill match: {s}" for s in sorted(exact)]
+
+    def _structured_evidence(rec: CandidateRecord) -> str:
+        bits = []
+        if rec.profile.seniority:
+            bits.append(rec.profile.seniority)
+        if rec.profile.years_of_experience:
+            bits.append(f"{rec.profile.years_of_experience}y exp")
+        top_skills = (rec.profile.technologies_used or [])[:3]
+        if top_skills:
+            bits.append("skills: " + ", ".join(top_skills))
+        return "Structured-score fallback (LLM rerank unavailable). " + " | ".join(bits) if bits else "Ranked by structured profile signals only."
 
     # Stage 4: LLM rerank on the wider funnel
     funnel = combined[:funnel_size]
@@ -259,10 +332,12 @@ def generate_shortlist(
         review_required = False
         final_score = base_score
 
-        if use_llm_rerank and ENABLE_EXTERNAL_LLM and GEMINI_API_KEY:
+        use_local = get_use_local_llm()
+        llm_route_ok = use_local or (ENABLE_EXTERNAL_LLM and get_active_api_key())
+
+        if use_llm_rerank and llm_route_ok:
             anon = anonymize_candidate_record(rec, c_id)
-            model = get_rerank_model()
-            prompt = (
+            user_prompt = (
                 f"Evaluate this candidate for this job.\n"
                 f"Job: {req.title}\n"
                 f"Must-have skills: {req.requirements.must_have}\n"
@@ -274,11 +349,25 @@ def generate_shortlist(
                 "'uncertainty_flags' (list of strings for anything uncertain)."
             )
             try:
-                resp = model.generate_content(
-                    prompt,
-                    generation_config=genai.GenerationConfig(response_mime_type="application/json")
-                )
-                eval_data = json.loads(resp.text)
+                if use_local:
+                    from .extract import _lm_studio_chat, _lm_studio_available
+                    if not _lm_studio_available():
+                        raise RuntimeError("LM Studio unreachable")
+                    resp_text = _lm_studio_chat(
+                        [
+                            {"role": "system", "content": "You are an expert technical recruiter. Respond with strict JSON only."},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        json_mode=True,
+                    )
+                    eval_data = json.loads(resp_text)
+                else:
+                    model = get_rerank_model()
+                    resp = model.generate_content(
+                        user_prompt,
+                        generation_config=genai.GenerationConfig(response_mime_type="application/json"),
+                    )
+                    eval_data = json.loads(resp.text)
                 final_score = eval_data.get("match_score", base_score)
                 evidence = eval_data.get("evidence", [])
                 uncertainty_flags = eval_data.get("uncertainty_flags", [])
@@ -287,9 +376,9 @@ def generate_shortlist(
             except Exception as e:
                 print(f"LLM rerank failed for {c_id}: {e}")
                 final_score = base_score
-                evidence = _keyword_evidence(rec) or ["Semantic similarity match (embedding)"]
+                evidence = _keyword_evidence(rec) or [_structured_evidence(rec)]
         else:
-            evidence = _keyword_evidence(rec) or ["Semantic similarity match (embedding)"]
+            evidence = _keyword_evidence(rec) or [_structured_evidence(rec)]
 
         shortlist.append({
             "record_id": c_id,

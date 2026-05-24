@@ -90,13 +90,7 @@ def anonymize_candidate_text(text: str) -> AnonymizedResult:
         return pattern.sub(_sub, s)
 
     # 1. LinkedIn (before generic URL so it gets its own token)
-    counter_li = [0]
-    def _sub_li(m: re.Match) -> str:
-        counter_li[0] += 1
-        token = f"LINKEDIN_{counter_li[0]:03d}"
-        mapping[token] = m.group(0)
-        return token
-    result = _LINKEDIN_RE.sub(_sub_li, result)
+    result = _replace_all(_LINKEDIN_RE, "LINKEDIN", result)
 
     # 2. Other URLs
     result = _replace_all(_URL_RE, "URL", result)
@@ -111,13 +105,7 @@ def anonymize_candidate_text(text: str) -> AnonymizedResult:
     result = _replace_all(_WINDOWS_PATH_RE, "PATH", result)
 
     # 6. Address lines (replace the whole line)
-    addr_counter = [0]
-    def _sub_addr(m: re.Match) -> str:
-        addr_counter[0] += 1
-        token = f"ADDR_LINE_{addr_counter[0]:03d}"
-        mapping[token] = m.group(0)
-        return token
-    result = _ADDRESS_TRIGGER_RE.sub(_sub_addr, result)
+    result = _replace_all(_ADDRESS_TRIGGER_RE, "ADDR_LINE", result)
 
     # 7. Best-effort name: first non-empty, non-token line that looks like a
     #    proper name (2-5 title-cased words, no digits).

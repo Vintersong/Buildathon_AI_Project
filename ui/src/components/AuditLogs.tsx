@@ -127,7 +127,7 @@ export default function AuditLogs({ events, searchQuery }: AuditLogsProps) {
             <CheckCircle className="w-5 h-5 text-status-ok" />
           </div>
           <div>
-            <div className="font-sans font-bold text-lg text-slate-800">record_index.json</div>
+            <div className="font-sans font-bold text-lg text-slate-800">Talent Pool</div>
             <div className="font-mono text-[11px] text-on-surface-variant mt-1">CRC32: 0x8F2A1C94</div>
           </div>
           <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-100">
@@ -149,7 +149,7 @@ export default function AuditLogs({ events, searchQuery }: AuditLogsProps) {
             <CheckCircle className="w-5 h-5 text-status-ok" />
           </div>
           <div>
-            <div className="font-sans font-bold text-lg text-slate-800">embedding_index.bin</div>
+            <div className="font-sans font-bold text-lg text-slate-800">Embedded</div>
             <div className="font-mono text-[11px] text-on-surface-variant mt-1">HNSW / L2 Distance</div>
           </div>
           <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-100">
@@ -173,7 +173,7 @@ export default function AuditLogs({ events, searchQuery }: AuditLogsProps) {
           <div className="space-y-1 relative z-10">
             <div className="flex items-center gap-2">
               <Globe className="w-4 h-4 text-status-ok" />
-              <span className="font-bold text-base">EEA (Dublin, IE)</span>
+              <span className="font-bold text-base">EEA (Cluj-Napoca, RO)</span>
             </div>
             <div className="text-xs text-slate-300">Data residency locked to regional shard.</div>
           </div>
@@ -194,7 +194,7 @@ export default function AuditLogs({ events, searchQuery }: AuditLogsProps) {
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 select-none">
           <h2 className="font-sans font-bold text-base flex items-center gap-2.5 text-primary">
             <Code className="w-5 h-5 text-on-surface-variant" />
-            <span>events.jsonl</span>
+            <span>Events</span>
           </h2>
           <div className="flex gap-2">
             <select
@@ -350,10 +350,9 @@ export default function AuditLogs({ events, searchQuery }: AuditLogsProps) {
         <div className="relative min-h-[300px] rounded-lg overflow-hidden border border-border-subtle group font-sans">
           <div className="absolute inset-0 bg-[repeating-linear-gradient(0deg,transparent,transparent_2px,rgba(99,102,241,0.04)_2px,rgba(99,102,241,0.04)_4px)] bg-slate-900" />
           <div className="absolute inset-0 bg-gradient-to-t from-primary via-primary/40 to-transparent flex flex-col justify-end p-8 text-white">
-            <div className="text-[10px] font-mono tracking-widest text-slate-300 font-bold uppercase mb-2">PHYSICAL INFRASTRUCTURE</div>
-            <h4 className="font-sans font-bold text-base">Deterministic Hardware Anchors</h4>
+            <div className="text-[10px] font-mono tracking-widest text-slate-300 font-bold uppercase mb-2"></div>
+            <h4 className="font-sans font-bold text-base"></h4>
             <p className="text-xs text-slate-200 mt-2 max-w-sm leading-relaxed">
-              Every byte is mapped to verified local database sectors. Zero cloud-spill for sensitive PII records.
             </p>
           </div>
         </div>

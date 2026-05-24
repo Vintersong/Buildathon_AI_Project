@@ -279,7 +279,7 @@ export default function SettingsPage({
           <div className="p-6 bg-white border border-border-subtle rounded-md space-y-2 text-xs font-sans">
             <h4 className="font-bold text-slate-800">Reset AI Chat History</h4>
             <p className="text-on-surface-variant leading-relaxed">
-              Clears the AI copilot conversation history stored in your browser. All candidate and job data is preserved.
+              Clears Bloodhounds conversation history stored in your browser. All candidate and job data is preserved.
             </p>
             <button
               onClick={handleResetChat}

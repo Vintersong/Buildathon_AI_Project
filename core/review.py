@@ -123,8 +123,6 @@ def _record_consent_proof(record_id: str, reviewer: str):
     record = load_record(record_id)
     if not record:
         return
-    if record.compliance.consent_basis:
-        return
     record.compliance.consent_basis = "uploaded_consent_proof"
     now = datetime.utcnow().isoformat() + "Z"
     record.updated_at = now

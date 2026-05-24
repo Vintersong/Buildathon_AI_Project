@@ -55,7 +55,7 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
 _PHONE_RE = re.compile(r"(?:\+\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?){2,4}\d{3,4}")
 _LINKEDIN_RE = re.compile(r"https?://(?:www\.)?linkedin\.com/in/[\w-]+/?")
 _URL_RE = re.compile(r"https?://[^\s]+")
-_WINDOWS_PATH_RE = re.compile(r"[A-Za-z]:\\(?:[^\\/:*?""<>|\r\n]+\\)*[^\\/:*?""<>|\r\n]*")
+_WINDOWS_PATH_RE = re.compile(r'[A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]*')
 _ADDRESS_TRIGGER_RE = re.compile(
     r"\b(?:Address|Street|Avenue|Blvd|Road|Lane|Drive|Str\.?|Str\s)\b",
     re.IGNORECASE,
@@ -152,13 +152,18 @@ def anonymize_candidate_record(record: CandidateRecord, record_id: str) -> Anony
     token = "CANDIDATE_001"
     real_name = record.identity.primary_name or record_id
 
+    def _scrub(value: str | None) -> str:
+        if not value:
+            return ""
+        return value.replace(real_name, token)
+
     skills = ", ".join(record.profile.technologies_used) if record.profile.technologies_used else "N/A"
     seniority = record.profile.seniority or "N/A"
     yoe = str(record.profile.years_of_experience) if record.profile.years_of_experience is not None else "N/A"
-    summary = record.profile.summary or ""
-    location = record.profile.location or "N/A"
+    summary = _scrub(record.profile.summary)
+    location = _scrub(record.profile.location) or "N/A"
     degrees = ", ".join(record.profile.study_degrees) if record.profile.study_degrees else "N/A"
-    jobs = ", ".join(record.profile.previous_jobs[:3]) if record.profile.previous_jobs else "N/A"
+    jobs = _scrub(", ".join(record.profile.previous_jobs[:3])) if record.profile.previous_jobs else "N/A"
 
     text = (
         f"Candidate: {token}\n"

@@ -372,7 +372,7 @@ export default function ReviewQueue({
             onClick={() => onNavigate('audit')}
             className="text-bloodhound-crimson font-bold font-mono text-xs hover:underline cursor-pointer uppercase tracking-wider"
           >
-            VIEW FULL events.jsonl
+            VIEW EVENTS
           </button>
         </div>
 

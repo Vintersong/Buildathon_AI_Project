@@ -6,6 +6,8 @@ from .store import load_record, save_record
 from .extract import extract_candidate_data
 from .events import log_error
 from .config import RECORDS_DIR, STALE_REFRESH_MONTHS
+from .compliance import evaluate_compliance
+from .review import add_to_queue
 
 
 def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
@@ -40,9 +42,11 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
             record.state.last_refreshed_at = now
 
             if extraction.technologies_used:
-                record.profile.technologies_used = list(
-                    set(record.profile.technologies_used) | set(extraction.technologies_used)
-                )
+                existing_skills = set(record.profile.technologies_used)
+                for skill in extraction.technologies_used:
+                    if skill not in existing_skills:
+                        record.profile.technologies_used.append(skill)
+                        existing_skills.add(skill)
 
             if extraction.previous_jobs:
                 existing_jobs = set(record.profile.previous_jobs)
@@ -79,8 +83,6 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
 
             # Run compliance check and queue violations for human review
             try:
-                from .compliance import evaluate_compliance
-                from .review import add_to_queue
                 cases = evaluate_compliance(record_id)
                 if cases:
                     add_to_queue(cases)

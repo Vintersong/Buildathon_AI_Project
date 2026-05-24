@@ -1,13 +1,11 @@
 import express from "express";
 import path from "path";
-import { fileURLToPath } from "url";
 import { config as loadDotenv } from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 import { createProxyMiddleware } from "http-proxy-middleware";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = process.cwd();
 
 // Load .env from project root (one level above ui/)
 loadDotenv({ path: path.resolve(__dirname, "../.env") });
@@ -50,6 +48,16 @@ const INJECTION_PATTERNS: RegExp[] = [
 function detectInjection(text: string): boolean {
   if (text.length > MAX_MESSAGE_LENGTH) return true;
   return INJECTION_PATTERNS.some((p) => p.test(text));
+}
+
+function parseLinkedInProfileName(linkedinUrl: string): string {
+  const slug = linkedinUrl.replace(/\/$/, "").split("/").pop() || "";
+  const words = slug.split(/[-_.]+/).filter(Boolean);
+  return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ") || "LinkedIn Candidate";
+}
+
+function isLinkedInProfileUrl(linkedinUrl: string): boolean {
+  return /^https:\/\/(?:www\.)?linkedin\.com\/in\/[^/\s]+\/?$/.test(linkedinUrl.trim());
 }
 
 function buildSafeContext(
@@ -339,6 +347,24 @@ Estimate a logical matchScore between 0.50 and 0.99 for the candidate's skills f
       details: error.message || String(error)
     });
   }
+});
+
+app.post("/api/gemini/parse-linkedin", jsonBodyParser, async (req, res) => {
+  const { linkedinUrl } = req.body;
+  if (!linkedinUrl || typeof linkedinUrl !== "string" || !isLinkedInProfileUrl(linkedinUrl)) {
+    res.status(400).json({ error: "Please provide a valid https://linkedin.com/in/... profile URL." });
+    return;
+  }
+
+  res.json({
+    candidate: {
+      name: parseLinkedInProfileName(linkedinUrl.trim()),
+      seniority: "LinkedIn profile",
+      topSkills: ["LINKEDIN"],
+      matchScore: 0.5,
+      complianceStatus: "PENDING REVIEW",
+    },
+  });
 });
 
 // 4. Proxy all other /api/* requests to the FastAPI backend

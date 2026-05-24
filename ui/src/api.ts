@@ -25,6 +25,14 @@ export function ingestCandidate(file: File): Promise<Candidate> {
   return request<Candidate>(`${BASE}/candidates/ingest`, { method: 'POST', body: form });
 }
 
+export function ingestLinkedInCandidate(linkedinUrl: string): Promise<Candidate> {
+  return request<Candidate>(`${BASE}/candidates/ingest/linkedin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ linkedinUrl }),
+  });
+}
+
 /**
  * Re-ingest an existing candidate by ID.
  * - File source  → POST /api/candidates/:id/reingest          (multipart)

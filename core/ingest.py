@@ -6,7 +6,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, Any
 from filelock import FileLock
-import fitz  # PyMuPDF
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 
 from .config import (
     MANIFEST_PATH,
@@ -20,6 +23,9 @@ from .extract import extract_candidate_data
 from .store import load_record, save_record
 from .events import log_error
 from .dedup import find_existing_by_identity
+from .compliance import evaluate_compliance
+from .review import add_to_queue
+from .security import anonymize_candidate_text
 
 # Consent basis applied to newly ingested records.
 # "legitimate_interest" is the GDPR basis most appropriate for recruitment.
@@ -90,6 +96,8 @@ def extract_text_from_file(file_path: Path) -> str:
 
     ext = file_path.suffix.lower()
     if ext == ".pdf":
+        if fitz is None:
+            raise ValueError("PDF parsing unavailable: PyMuPDF is not installed")
         full_text = ""
         ocr_used = False
         try:
@@ -183,7 +191,12 @@ def _merge_record(record: CandidateRecord, extraction, now: str) -> list[dict]:
     return changes
 
 
-def ingest_file(file_path: Path, source_type: str = "document", force: bool = False) -> str:
+def ingest_file(
+    file_path: Path,
+    source_type: str = "document",
+    force: bool = False,
+    target_record_id: Optional[str] = None,
+) -> str:
     """
     Ingest a file: hash, dedup (hash + identity), extract text, run LLM extract,
     create or update record, then run compliance checks.
@@ -196,7 +209,7 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
     file_hash = compute_sha256(file_path)
     existing_by_hash = check_manifest(file_hash)
 
-    if existing_by_hash and not force:
+    if existing_by_hash and not force and not target_record_id:
         print(f"Skipping {file_path.name}: already ingested (hash match) into {existing_by_hash}")
         return existing_by_hash
 
@@ -215,8 +228,15 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
 
     extraction, model_info = extract_candidate_data(raw_text)
 
-    existing_by_identity = find_existing_by_identity(extraction)
-    existing_record_id = existing_by_hash or existing_by_identity
+    if target_record_id:
+        target_record = load_record(target_record_id)
+        if not target_record:
+            raise ValueError(f"Target record not found: {target_record_id}")
+        existing_by_identity = None
+        existing_record_id = target_record_id
+    else:
+        existing_by_identity = find_existing_by_identity(extraction)
+        existing_record_id = existing_by_hash or existing_by_identity
 
     if existing_by_identity and not existing_by_hash:
         print(f"Identity match found for {file_path.name}: merging into existing record {existing_by_identity}")
@@ -283,8 +303,6 @@ def ingest_file(file_path: Path, source_type: str = "document", force: bool = Fa
     save_record(record_id, record, event=event)
 
     try:
-        from .compliance import evaluate_compliance
-        from .review import add_to_queue
         cases = evaluate_compliance(record_id)
         if cases:
             add_to_queue(cases)
@@ -311,7 +329,7 @@ def _quarantine_security(file_path: Path, reason: str):
     data = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "reason": reason,
-        "attempted_path": str(file_path),
+        "attempted_path": anonymize_candidate_text(str(file_path)).anonymized_text,
     }
 
     with open(folder / f"{quarantine_id}.json", "w", encoding="utf-8") as f:

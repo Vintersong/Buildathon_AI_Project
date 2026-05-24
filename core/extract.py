@@ -247,8 +247,10 @@ def _quarantine_failed_output(source_text: str, raw_output: str, error_type: str
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "error_type": error_type,
         "model": MODEL_NAME,
-        "source_text_snippet": source_text[:1000] + "..." if len(source_text) > 1000 else source_text,
-        "raw_output": raw_output,
+        "source_text_snippet": anonymize_candidate_text(
+            source_text[:1000] + "..." if len(source_text) > 1000 else source_text
+        ).anonymized_text,
+        "raw_output": anonymize_candidate_text(raw_output).anonymized_text,
     }
 
     with open(file_path, "w", encoding="utf-8") as f:

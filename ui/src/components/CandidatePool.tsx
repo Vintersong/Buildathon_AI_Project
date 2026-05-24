@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef, type ReactNode } from 'react';
 import {
   AlertTriangle, Clock, MoreVertical, CheckCircle, History,
   Shield, UserPlus, Microscope, Search, X, Filter, ExternalLink,
@@ -30,7 +30,7 @@ const PAGE_SIZE = 10;
 
 // ─── Candidate Detail Drawer ──────────────────────────────────────────────────
 
-function DetailTag({ label }: { label: string }) {
+function DetailTag({ label }: { label: string; key?: string }) {
   return (
     <span className="px-2 py-0.5 bg-surface-container-low border border-border-subtle font-mono text-[10px] font-semibold text-primary rounded">
       {label}
@@ -38,7 +38,7 @@ function DetailTag({ label }: { label: string }) {
   );
 }
 
-function Section({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+function Section({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-1.5 text-[10px] font-bold font-mono uppercase tracking-wider text-on-surface-variant">
@@ -195,6 +195,7 @@ export default function CandidatePool({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkRefreshing, setBulkRefreshing] = useState(false);
   const [bulkRefreshDone, setBulkRefreshDone] = useState(false);
+  const [bulkRefreshError, setBulkRefreshError] = useState<string | null>(null);
 
   // Re-ingest popover: stores { id, name, linkedinUrl } of the candidate being re-ingested
   const [reingestTarget, setReingestTarget] = useState<{ id: string; name: string; linkedinUrl?: string | null } | null>(null);
@@ -308,18 +309,25 @@ export default function CandidatePool({
     if (selectedIds.size === 0) return;
     setBulkRefreshing(true);
     setBulkRefreshDone(false);
+    setBulkRefreshError(null);
     try {
       if (onBulkRefresh) {
         await onBulkRefresh(Array.from(selectedIds));
       } else {
-        await fetch('/api/candidates/bulk-refresh', {
+        const res = await fetch('/api/candidates/bulk-refresh', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ids: Array.from(selectedIds) }),
         });
+        if (!res.ok) {
+          const detail = await res.text().catch(() => res.statusText);
+          throw new Error(detail || `Bulk refresh failed with HTTP ${res.status}`);
+        }
       }
       setBulkRefreshDone(true);
       setTimeout(() => { setSelectedIds(new Set()); setBulkRefreshDone(false); }, 1800);
+    } catch (e: unknown) {
+      setBulkRefreshError(e instanceof Error ? e.message : String(e));
     } finally {
       setBulkRefreshing(false);
     }
@@ -513,7 +521,7 @@ export default function CandidatePool({
 
         {selectedIds.size > 0 && (
           <div id="bulk-action-toolbar"
-            className="flex items-center justify-between px-6 py-3 bg-slate-deep text-white border-b border-white/10 animate-in slide-in-from-top duration-200">
+            className="flex flex-wrap items-center justify-between px-6 py-3 bg-slate-deep text-white border-b border-white/10 animate-in slide-in-from-top duration-200">
             <div className="flex items-center gap-3">
               <CheckSquare className="w-4 h-4 text-amber-400 shrink-0" />
               <span className="text-xs font-bold font-mono uppercase tracking-wider">
@@ -530,6 +538,11 @@ export default function CandidatePool({
               <button onClick={() => setSelectedIds(new Set())}
                 className="text-white/70 hover:text-white text-[11px] font-mono underline cursor-pointer transition-colors">Deselect all</button>
             </div>
+            {bulkRefreshError && (
+              <div className="basis-full text-[11px] text-red-200 font-mono pt-2">
+                {bulkRefreshError}
+              </div>
+            )}
           </div>
         )}
 

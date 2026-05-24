@@ -25,6 +25,33 @@ if GEMINI_API_KEY:
 MODEL_NAME = "gemini-1.5-pro"
 
 
+def _scoring_weights(req: RequirementRecord) -> Dict[str, float]:
+    """Compatibility helper for eval tooling that still reads scoring weights."""
+    weights = {}
+    for key, value in (req.scoring or {}).items():
+        if isinstance(value, dict) and "weight" in value:
+            weights[key] = float(value["weight"])
+    return weights or {"skills": 1.0}
+
+
+def score_keywords(candidates: List[str], req: RequirementRecord) -> Dict[str, float]:
+    """Legacy keyword scorer retained for tests/evals; not used for final ranking."""
+    requirement_text = " ".join(req.requirements.must_have + req.requirements.nice_to_have)
+    scores = {}
+    for c_id in candidates:
+        rec = load_record(c_id)
+        if not rec:
+            continue
+        candidate_text = " ".join([
+            rec.profile.headline or "",
+            rec.profile.summary or "",
+            " ".join(rec.profile.technologies_used or []),
+            " ".join(rec.profile.previous_jobs or []),
+        ])
+        scores[c_id] = calculate_keyword_overlap(requirement_text, candidate_text)
+    return scores
+
+
 def get_rerank_model():
     return genai.GenerativeModel(
         model_name=MODEL_NAME,

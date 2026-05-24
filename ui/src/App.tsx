@@ -119,6 +119,28 @@ export default function App() {
     }
   };
 
+  const handleIngestLinkedIn = async (linkedinUrl: string) => {
+    markSyncing();
+    try {
+      const newCand = await api.ingestLinkedInCandidate(linkedinUrl);
+      const [updatedCandidates, updatedTasks, updatedAudit] = await Promise.all([
+        api.fetchCandidates(),
+        api.fetchReviewTasks(),
+        api.fetchAuditEvents(),
+      ]);
+      setCandidates(updatedCandidates);
+      setReviewTasks(updatedTasks);
+      setAuditEvents(updatedAudit);
+      setNotificationsCount(updatedTasks.filter((t) => t.status === 'pending').length);
+      triggerToast(`LinkedIn candidate ${newCand.name} ingested for review.`);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      triggerToast(`LinkedIn ingest failed: ${msg}`, 'error');
+    } finally {
+      setIsSynced(true);
+    }
+  };
+
   // 2. Resolve review task
   const handleResolveTask = async (taskId: string, outcome: 'approved' | 'rejected' | 'purged') => {
     markSyncing();
@@ -147,7 +169,7 @@ export default function App() {
   const handleAddJob = async (newJob: Omit<JobRequirement, 'id' | 'candidatesProcessed' | 'shortlist'>) => {
     markSyncing();
     try {
-      await api.createJob({ ...newJob, must_have: newJob.tags });
+      await api.createJob({ ...newJob, must_have: [] });
       const updatedJobs = await api.fetchJobs();
       setJobs(updatedJobs);
       triggerToast(`Requirement '${newJob.title}' deployed on matching matrix!`);
@@ -262,6 +284,10 @@ export default function App() {
               onNavigate={(sc) => { setActiveScreen(sc); setSearchQuery(''); }}
               onOpenReviewTask={(taskId) => { setFocusedTaskId(taskId); setActiveScreen('review'); }}
               onResolveCandidateDirectly={handleResolveCandidateDirectly}
+              onCandidateUpdated={(updated) => {
+                setCandidates((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+                refreshAll();
+              }}
               recentLogs={auditEvents}
               reviewTasks={reviewTasks}
             />
@@ -275,6 +301,10 @@ export default function App() {
               onOpenReviewTask={(taskId) => { setFocusedTaskId(taskId); setActiveScreen('review'); }}
               onAddJob={handleAddJob}
               reviewTasks={reviewTasks}
+              onOutreachDraftCreated={(task) => {
+                setReviewTasks((prev) => prev.some((t) => t.id === task.id) ? prev : [task, ...prev]);
+                setNotificationsCount((count) => count + (task.status === 'pending' ? 1 : 0));
+              }}
               onBulkDismiss={handleDismissLowMatches}
               onRestoreDismissed={handleRestoreDismissed}
             />
@@ -287,6 +317,7 @@ export default function App() {
               focusedTaskId={focusedTaskId}
               onClearFocus={() => setFocusedTaskId(undefined)}
               onNavigate={(sc) => { setActiveScreen(sc); setSearchQuery(''); }}
+              auditEvents={auditEvents}
             />
           )}
 
@@ -312,6 +343,7 @@ export default function App() {
         <IngestModal
           onClose={() => setShowIngestModal(false)}
           onIngest={handleIngestCandidate}
+          onIngestLinkedIn={handleIngestLinkedIn}
         />
       )}
 

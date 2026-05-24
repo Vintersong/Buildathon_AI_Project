@@ -1,12 +1,13 @@
 import json
+import os
 import re
 import uuid
 import shutil
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -27,8 +28,10 @@ from core.config import (
 from core.ingest import ingest_file
 from core.review import get_review_queue, resolve_case
 from core.events import log_event
+from core.schemas import CandidateRecord, Identity, Profile, Compliance, Scores
 
 app = FastAPI(title="Bloodhound Talent Pool Manager")
+TALENT_POOL_ADMIN_TOKEN = os.getenv("TALENT_POOL_ADMIN_TOKEN")
 
 app.add_middleware(
     CORSMiddleware,
@@ -39,6 +42,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/candidates", include_in_schema=False)
+async def legacy_candidates_page(request: Request):
+    if TALENT_POOL_ADMIN_TOKEN and request.headers.get("x-admin-token") != TALENT_POOL_ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return {"ok": True}
 
 # ---------------------------------------------------------------------------
 # App config (config.json at project root)
@@ -92,6 +102,25 @@ async def post_config(body: AppConfig):
     return body
 
 
+class LinkedInPreviewBody(BaseModel):
+    linkedinUrl: str
+
+
+@app.post("/api/gemini/parse-linkedin")
+async def parse_linkedin_profile(body: LinkedInPreviewBody):
+    linkedin_url = _validate_linkedin_url(body.linkedinUrl)
+    name = _linkedin_profile_name(linkedin_url)
+    return {
+        "candidate": {
+            "name": name,
+            "seniority": "LinkedIn profile",
+            "topSkills": ["LINKEDIN"],
+            "matchScore": 0.5,
+            "complianceStatus": "PENDING REVIEW",
+        }
+    }
+
+
 # ---------------------------------------------------------------------------
 # Data mapping helpers
 # ---------------------------------------------------------------------------
@@ -101,6 +130,19 @@ def _initials(name: Optional[str]) -> str:
         return "??"
     parts = name.strip().split()
     return "".join(p[0] for p in parts if p)[:2].upper()
+
+
+def _linkedin_profile_name(linkedin_url: str) -> str:
+    slug = linkedin_url.rstrip("/").split("/")[-1]
+    words = [w for w in re.split(r"[-_.]+", slug) if w]
+    return " ".join(word.capitalize() for word in words) or "LinkedIn Candidate"
+
+
+def _validate_linkedin_url(linkedin_url: str) -> str:
+    value = linkedin_url.strip()
+    if not re.match(r"^https://(?:www\.)?linkedin\.com/in/[^/\s]+/?$", value):
+        raise HTTPException(status_code=400, detail="linkedinUrl must be a https://linkedin.com/in/... profile URL")
+    return value
 
 
 def _compliance_status(record) -> str:
@@ -255,6 +297,16 @@ def _map_review_task(case: dict) -> dict:
             "location": rec.profile.location if rec else "",
             "linkedin": rec.identity.linkedin_url if rec else "",
         }
+        task["proposedRecord"] = {
+            "source": case.get("source", "new_ingest"),
+            "name": case.get("proposed_name") or name,
+            "currentRole": case.get("proposed_role") or (rec.profile.headline if rec else ""),
+            "location": case.get("proposed_location") or (rec.profile.location if rec else ""),
+            "linkedin": case.get("proposed_linkedin") or (rec.identity.linkedin_url if rec else ""),
+            "addedRole": case.get("added_role") or "",
+            "removedRole": case.get("removed_role") or "",
+        }
+        task["recommendation"] = case.get("recommendation") or reason
 
     return task
 
@@ -357,6 +409,57 @@ class LinkedInReingestBody(BaseModel):
     linkedinUrl: str
 
 
+@app.post("/api/candidates/ingest/linkedin")
+async def ingest_linkedin_candidate(body: LinkedInReingestBody):
+    linkedin_url = _validate_linkedin_url(body.linkedinUrl)
+    now = datetime.utcnow().isoformat() + "Z"
+    record_id = f"cand_{uuid.uuid4().hex[:12]}"
+    name = _linkedin_profile_name(linkedin_url)
+
+    rec = CandidateRecord(
+        created_at=now,
+        updated_at=now,
+        identity=Identity(primary_name=name, linkedin_url=linkedin_url),
+        profile=Profile(
+            headline="LinkedIn profile import",
+            summary=f"Profile imported from {linkedin_url}",
+            seniority="Unknown",
+        ),
+        scores=Scores(extraction_confidence=0.5),
+        compliance=Compliance(
+            consent_basis="legitimate_interest",
+            source="linkedin",
+            human_review_required=True,
+        ),
+    )
+
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "linkedin_profile_ingested",
+        "timestamp": now,
+        "actor": {"type": "human"},
+        "source": {"record_id": record_id, "source_type": "linkedin_ingest", "linkedin_url": linkedin_url},
+        "changes": [{"operation": "create", "path": "/", "value": "linkedin_profile"}],
+        "review": {"required": True, "reason": "linkedin_profile_review"},
+        "confidence": 0.5,
+    }
+
+    try:
+        save_record(record_id, rec, event=event)
+        from core.review import add_to_queue
+        add_to_queue([{
+            "case_id": f"review_{uuid.uuid4().hex[:12]}",
+            "record_id": record_id,
+            "reason": "linkedin_profile_review",
+            "created_at": now,
+            "status": "open",
+        }])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to ingest LinkedIn profile: {e}")
+
+    return _map_candidate(record_id, rec)
+
+
 @app.post("/api/candidates/{record_id}/reingest")
 async def reingest_candidate(
     record_id: str,
@@ -380,7 +483,7 @@ async def reingest_candidate(
     try:
         with open(dest, "wb") as f:
             shutil.copyfileobj(file.file, f)
-        ingest_file(dest, source_type="document_update", force=True)
+        ingest_file(dest, source_type="document_update", force=True, target_record_id=record_id)
     except PermissionError as e:
         dest.unlink(missing_ok=True)
         raise HTTPException(status_code=403, detail=str(e))
@@ -404,9 +507,7 @@ async def reingest_candidate_linkedin(record_id: str, body: LinkedInReingestBody
     if not rec:
         raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
 
-    linkedin_url = body.linkedinUrl.strip()
-    if not linkedin_url.startswith("https://"):
-        raise HTTPException(status_code=400, detail="linkedinUrl must start with https://")
+    linkedin_url = _validate_linkedin_url(body.linkedinUrl)
 
     now = datetime.utcnow().isoformat() + "Z"
     old_url = rec.identity.linkedin_url or ""
@@ -453,7 +554,7 @@ async def patch_candidate_status(record_id: str, body: StatusPatch):
     elif status == "PENDING REVIEW":
         rec.compliance.human_review_required = True
     elif status in ("EXPIRING (14D)", "EXPIRING"):
-        pass
+        rec.compliance.retention_until = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
     else:
         raise HTTPException(status_code=400, detail=f"Unknown complianceStatus: '{body.complianceStatus}'")
 
@@ -512,8 +613,8 @@ def _map_job(req_id: str, data: dict) -> dict:
         "title": data.get("title", ""),
         "department": data.get("department") or data.get("description", ""),
         "location": reqs.get("location", ""),
-        "status": "MATCHING",
-        "tags": reqs.get("must_have", [])[:2],
+        "status": data.get("status", "MATCHING"),
+        "tags": data.get("tags") or reqs.get("must_have", [])[:2],
         "candidatesProcessed": data.get("shortlist_meta", {}).get("total_filtered", 0),
         "shortlist": shortlist,
     }
@@ -553,6 +654,8 @@ async def create_job(body: JobCreate):
         "scoring": {},
         "shortlist": [],
         "shortlist_meta": {},
+        "status": body.status,
+        "tags": body.tags,
         "created_at": now,
         "updated_at": now,
     }
@@ -659,6 +762,42 @@ async def create_outreach_draft(body: OutreachDraftBody):
         raise HTTPException(status_code=500, detail="Case created but not found in queue")
 
     return _map_review_task(new_case)
+
+
+# ---------------------------------------------------------------------------
+# Candidate maintenance endpoints
+# ---------------------------------------------------------------------------
+
+class BulkRefreshBody(BaseModel):
+    ids: List[str]
+
+
+@app.post("/api/candidates/bulk-refresh")
+async def bulk_refresh_candidates(body: BulkRefreshBody):
+    from core.maintenance import bulk_refresh
+
+    updates = []
+    missing = []
+    for record_id in body.ids:
+        rec = load_record(record_id)
+        if not rec:
+            missing.append(record_id)
+            continue
+        raw_text = "\n".join([
+            rec.identity.primary_name or "",
+            rec.profile.headline or rec.profile.seniority or "",
+            rec.profile.summary or "",
+            rec.identity.linkedin_url or "",
+            "Skills: " + ", ".join(rec.profile.technologies_used or []),
+            "Jobs: " + ", ".join(rec.profile.previous_jobs or []),
+        ])
+        updates.append({"record_id": record_id, "raw_text": raw_text})
+
+    result = bulk_refresh(updates) if updates else {"success": 0, "failed": 0, "errors": []}
+    if missing:
+        result["failed"] = result.get("failed", 0) + len(missing)
+        result.setdefault("errors", []).extend({"record_id": rid, "error": "Record not found"} for rid in missing)
+    return result
 
 
 # ---------------------------------------------------------------------------

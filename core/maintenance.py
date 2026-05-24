@@ -5,7 +5,7 @@ import uuid
 from .store import load_record, save_record
 from .extract import extract_candidate_data
 from .events import log_error
-from .config import RECORDS_DIR, STALE_REFRESH_MONTHS
+from .config import RECORDS_DIR, STALE_REFRESH_MONTHS, get_confidence_threshold
 from .compliance import evaluate_compliance
 from .review import add_to_queue
 
@@ -61,7 +61,7 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
             record.scores.extraction_confidence = extraction.extraction_confidence
 
             # Reflect actual review state in the audit event, not a hardcoded False
-            review_required = extraction.extraction_confidence < 0.75
+            review_required = extraction.extraction_confidence < get_confidence_threshold()
             if review_required:
                 record.compliance.human_review_required = True
 

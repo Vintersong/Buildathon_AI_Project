@@ -311,19 +311,36 @@ class RegressionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             match._load_requirement("../secret")
 
-    def test_base_template_has_no_cdn(self):
-        content = Path("web/templates/base.html").read_text(encoding="utf-8")
-        self.assertNotIn("cdn.jsdelivr.net", content)
-        self.assertNotIn("https://", content)
-
-    def test_web_routes_require_auth(self):
-        from fastapi.testclient import TestClient
+    def test_legacy_candidates_page_route_is_removed(self):
         import web.app as web_app
 
-        with patch.object(web_app, "TALENT_POOL_ADMIN_TOKEN", "test-token"):
-            client = TestClient(web_app.app)
-            self.assertEqual(client.get("/candidates").status_code, 401)
-            self.assertEqual(client.get("/candidates", headers={"x-admin-token": "test-token"}).status_code, 200)
+        self.assertNotIn("/candidates", {route.path for route in web_app.app.routes})
+
+    def test_cv_preview_endpoint_returns_ui_shape(self):
+        import web.app as web_app
+
+        with patch("core.extract.extract_candidate_data", return_value=(make_extraction(), {"external": False})):
+            response = asyncio.run(web_app.parse_cv_preview(web_app.CVPreviewBody(resumeText="Ada Lovelace Python")))
+
+        self.assertEqual(response["candidate"]["name"], "Ada Lovelace")
+        self.assertEqual(response["candidate"]["seniority"], "Senior")
+        self.assertEqual(response["candidate"]["topSkills"], ["PYTHON"])
+        self.assertEqual(response["candidate"]["complianceStatus"], "PENDING REVIEW")
+
+    def test_maintenance_stale_endpoint_maps_candidates(self):
+        import web.app as web_app
+
+        record = make_record()
+        record.state.last_refreshed_at = "2025-01-01T00:00:00Z"
+        record.identity.linkedin_url = "https://www.linkedin.com/in/ada"
+
+        with patch("core.maintenance.find_stale_candidates", return_value=["cand_test"]), \
+            patch.object(web_app, "load_record", return_value=record):
+            response = asyncio.run(web_app.list_stale_candidates(months=6))
+
+        self.assertEqual(response["months"], 6)
+        self.assertEqual(response["candidates"][0]["id"], "cand_test")
+        self.assertEqual(response["candidates"][0]["linkedinUrl"], "https://www.linkedin.com/in/ada")
 
     def test_anonymize_candidate_text_replaces_direct_identifiers(self):
         from core.security import anonymize_candidate_text

@@ -110,6 +110,16 @@ def get_use_local_llm() -> bool:
         return False
 
 
+def get_confidence_threshold(default: float = 0.85) -> float:
+    try:
+        with open(_APP_CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        value = float(data.get("confidence_threshold", default))
+        return min(max(value, 0.0), 1.0)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
+        return default
+
+
 # LM Studio model identifier sent in the OpenAI-compatible chat request.
 # "local-model" is the legacy default; recent LM Studio versions ignore the
 # model field when only one is loaded but newer ones require the exact slug.

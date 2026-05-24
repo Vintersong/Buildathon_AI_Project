@@ -17,6 +17,7 @@ from .config import (
     INTAKE_DIR,
     MAX_INGEST_FILE_BYTES,
     MAX_PDF_PAGES,
+    get_confidence_threshold,
 )
 from .schemas import CandidateRecord, Identity, Profile, State, Compliance, Scores
 from .extract import extract_candidate_data
@@ -272,7 +273,7 @@ def ingest_file(
             ),
             compliance=Compliance(
                 consent_basis=DEFAULT_CONSENT_BASIS,
-                human_review_required=(extraction.extraction_confidence < 0.75),
+                human_review_required=(extraction.extraction_confidence < get_confidence_threshold()),
             ),
         )
         merge_changes = [{"operation": "create", "path": "/", "value": "initial_extraction"}]

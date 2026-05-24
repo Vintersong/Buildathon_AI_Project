@@ -1,20 +1,27 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# Linnify AI Talent Pool Manager UI
 
-# Run and deploy your AI Studio app
+React frontend for the Linnify challenge implementation. The UI talks to the FastAPI backend for candidate extraction, talent pool maintenance, job shortlisting, outreach drafts, review queue actions, audit events, and LM Studio/Gemma configuration.
 
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/bf4a9da8-60a7-435e-80a2-e34ac343f321
-
-## Run Locally
-
-**Prerequisites:**  Node.js
-
+## Local Run
 
 1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+
+   ```bash
+   npm install
+   ```
+
+2. Start the FastAPI backend from the repository root.
+
+3. Start the UI proxy:
+
+   ```bash
+   npm run dev
+   ```
+
+The proxy serves the React app and forwards `/api/*` calls to `FASTAPI_URL` when set, or `http://127.0.0.1:8080` by default.
+
+## Configuration
+
+- Prefer LM Studio with Gemma for local LLM search and drafting by enabling local routing in Settings.
+- External Gemini usage requires a key saved through the Settings screen or backend secrets file.
+- LinkedIn workflows use provided URLs or pasted profile text only. The app does not scrape LinkedIn.

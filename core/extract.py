@@ -6,14 +6,14 @@ from pydantic import ValidationError
 from datetime import datetime
 import uuid
 
-from .config import QUARANTINE_DIR, get_use_local_llm, LM_STUDIO_MODEL
+from .config import QUARANTINE_DIR, get_use_local_llm, LM_STUDIO_MODEL, LM_STUDIO_BASE_URL
 from .schemas import CandidateExtraction
 from .security import anonymize_candidate_text, rehydrate_text
 
 # Feature flag — when False the external LLM call is skipped and the
 # heuristic fallback is used instead (safe for air-gapped / no-key deploys).
 import os
-from .config import get_active_api_key, get_active_model
+from .config import GEMINI_API_KEY, get_active_api_key, get_active_model
 
 ENABLE_EXTERNAL_LLM = os.getenv("ENABLE_EXTERNAL_LLM", "true").lower() == "true"
 
@@ -34,10 +34,11 @@ def _configure_genai() -> bool:
 
 
 def _lm_studio_available() -> bool:
-    """Return True if a local LM Studio server is reachable on port 1234."""
+    """Return True if the configured LM Studio server is reachable."""
     import urllib.request
+    models_url = LM_STUDIO_BASE_URL.rstrip("/") + "/models"
     try:
-        urllib.request.urlopen("http://localhost:1234/v1/models", timeout=1)
+        urllib.request.urlopen(models_url, timeout=1)
         return True
     except Exception:
         return False
@@ -52,7 +53,10 @@ def _lm_studio_chat(messages: list, json_mode: bool = False) -> str:
     model is constrained to emit valid JSON — required by extract.py / match.py
     which then `json.loads()` the response.
     """
-    from openai import OpenAI
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError("The 'openai' package is required for LM Studio support. Install requirements.txt.") from exc
     from .config import LM_STUDIO_MODEL, LM_STUDIO_BASE_URL
     client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio")
     kwargs = {"model": LM_STUDIO_MODEL, "messages": messages, "temperature": 0.2}
@@ -153,7 +157,7 @@ def extract_candidate_data(text: str) -> Tuple[CandidateExtraction, Dict[str, An
         return extract_candidate_data_heuristic(text)
 
     use_local = get_use_local_llm()
-    if not use_local and not get_active_api_key():
+    if not use_local and not (GEMINI_API_KEY or get_active_api_key()):
         return extract_candidate_data_heuristic(text)
 
     # --- Anonymise before sending to external LLM ---
@@ -326,7 +330,7 @@ def _quarantine_failed_output(source_text: str, raw_output: str, error_type: str
     quarantine_data = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "error_type": error_type,
-        "model": MODEL_NAME,
+        "model": get_active_model(DEFAULT_EXTRACT_MODEL),
         "source_text_snippet": anonymize_candidate_text(
             source_text[:1000] + "..." if len(source_text) > 1000 else source_text
         ).anonymized_text,

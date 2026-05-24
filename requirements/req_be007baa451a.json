@@ -1,0 +1,78 @@
+{
+  "id": "req_be007baa451a",
+  "title": "Mid Level Game Programmer",
+  "department": "Game Studio Godot",
+  "description": "Game Studio Godot",
+  "requirements": {
+    "must_have": [],
+    "nice_to_have": [],
+    "location": "Austin/Remote",
+    "language": [],
+    "category": null
+  },
+  "scoring": {},
+  "shortlist": [
+    {
+      "record_id": "cand_43eff8a573f4",
+      "candidate_name": "Susan Johnson",
+      "match_score": 0.7833,
+      "evidence": [
+        "Structured-score fallback (LLM rerank unavailable). Senior | 14y exp | skills: Docker, JavaScript, AWS"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    },
+    {
+      "record_id": "cand_65189a921870",
+      "candidate_name": "Susan Garcia",
+      "match_score": 0.775,
+      "evidence": [
+        "Structured-score fallback (LLM rerank unavailable). Senior | 12y exp | skills: Python, Java, Node.js"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    },
+    {
+      "record_id": "cand_68516654f99c",
+      "candidate_name": "Patricia Smith",
+      "match_score": 0.7583,
+      "evidence": [
+        "Structured-score fallback (LLM rerank unavailable). Senior | 11y exp | skills: Java, React, Kubernetes"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    },
+    {
+      "record_id": "cand_7684d708586f",
+      "candidate_name": "Robert Williams",
+      "match_score": 0.75,
+      "evidence": [
+        "Structured-score fallback (LLM rerank unavailable). Senior | 12y exp | skills: Kubernetes, Node.js, C++"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    },
+    {
+      "record_id": "cand_1c6b8752b18f",
+      "candidate_name": "Michael Hernandez",
+      "match_score": 0.7333,
+      "evidence": [
+        "Structured-score fallback (LLM rerank unavailable). Senior | 11y exp | skills: Java, C++, Python"
+      ],
+      "uncertainty_flags": [],
+      "review_required": false
+    }
+  ],
+  "shortlist_meta": {
+    "funnel_size": 15,
+    "total_filtered": 20,
+    "generated_at": "2026-05-24T09:28:23.277471Z"
+  },
+  "status": "MATCHING",
+  "tags": [
+    "MATCHING",
+    "NEW"
+  ],
+  "created_at": "2026-05-24T09:27:41.268003Z",
+  "updated_at": "2026-05-24T09:27:41.268003Z"
+}

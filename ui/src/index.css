@@ -1,57 +1,63 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", "system-ui", "-apple-system", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 
-  /* Custom palette colors */
-  --color-bloodhound-crimson: #991B1B;
-  --color-bloodhound-orange: #C2410C;
-  --color-slate-deep: #0F172A;
-  --color-surface: #f8f9ff;
-  --color-border-subtle: #E2E8F0;
-  
-  --color-status-ok: #15803D;
-  --color-status-review: #B45309;
-  --color-status-error: #B91C1C;
-  --color-status-archived: #94A3B8;
-  
-  --color-surface-dim: #cbdbf5;
-  --color-surface-container-lowest: #ffffff;
-  --color-surface-container-low: #eff4ff;
-  --color-surface-container: #e5eeff;
-  --color-surface-container-high: #dce9ff;
-  --color-surface-container-highest: #d3e4fe;
-  
-  --color-on-surface: #0b1c30;
-  --color-on-surface-variant: #45464d;
+  --color-primary: #0f172a;
+  --color-on-primary: #ffffff;
+  --color-surface: #f8fafc;
+  --color-border-subtle: #e2e8f0;
+  --color-on-surface: #0f172a;
+  --color-on-surface-variant: #475569;
+}
 
-  /* Brand alias: many components use bg-primary / text-primary / text-on-primary.
-     Without these, Tailwind v4 silently drops the rule (e.g. "Create New Job"
-     button renders white-on-white and disappears). */
-  --color-primary: #0F172A;          /* same hue as slate-deep */
-  --color-on-primary: #FFFFFF;
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
 }
 
 body {
-  font-family: var(--font-sans);
-  background-color: #FFFFFF;
+  margin: 0;
+  min-width: 320px;
+  background: #f8fafc;
   color: var(--color-on-surface);
+  font-family: var(--font-sans);
 }
 
-/* Scrollbars spacing */
-.custom-scrollbar::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+button,
+input,
+textarea,
+select {
+  font: inherit;
 }
+
+button {
+  touch-action: manipulation;
+}
+
+::selection {
+  background: #cffafe;
+  color: #0f172a;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
+
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--color-border-subtle);
+  background: #cbd5e1;
   border-radius: 9999px;
 }
+
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-  background: #cbd5e1;
+  background: #94a3b8;
 }

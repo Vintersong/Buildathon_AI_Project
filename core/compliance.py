@@ -6,6 +6,7 @@ from .config import COMPLIANCE_LOG_PATH
 from .schemas import CandidateRecord
 from .events import log_compliance
 from .store import load_record
+from .config import get_confidence_threshold
 
 
 def evaluate_compliance(record_id: str) -> List[Dict[str, Any]]:
@@ -35,7 +36,10 @@ def evaluate_compliance(record_id: str) -> List[Dict[str, Any]]:
         review_cases.append(_create_case(record_id, "data_region_violation"))
 
     # 4. Extraction Confidence
-    if record.scores.extraction_confidence is not None and record.scores.extraction_confidence < 0.75:
+    if (
+        record.scores.extraction_confidence is not None
+        and record.scores.extraction_confidence < get_confidence_threshold()
+    ):
         review_cases.append(_create_case(record_id, "low_extraction_confidence"))
 
     # 5. Sensitive Data

@@ -1,6 +1,6 @@
 {
-  "name": "Bloodhound",
-  "description": "Precision Talent and AI verification ledger platform",
+  "name": "Linnify AI Talent Pool Manager",
+  "description": "Operational talent pool UI for extraction, refresh, shortlisting, outreach review, and compliance workflows.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": ["LOCAL_LLM_ROUTING", "HUMAN_IN_THE_LOOP_REVIEW"]
 }

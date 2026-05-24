@@ -1,20 +1,14 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
 export interface Candidate {
-  id: string; // e.g. 'BLD-9021-X'
+  id: string;
   name: string;
   imageInitials: string;
   seniority: string;
   topSkills: string[];
-  matchScore: number; // e.g. 0.94
+  matchScore: number;
   complianceStatus: 'COMPLIANT' | 'PENDING REVIEW' | 'EXPIRING (14D)';
   actionsRequired?: boolean;
 }
 
-/** Extended candidate with all extracted profile fields — loaded on demand for the detail drawer. */
 export interface CandidateDetail extends Candidate {
   headline: string;
   summary: string;
@@ -34,6 +28,20 @@ export interface CandidateDetail extends Candidate {
   lastMatchScore: number | null;
   updatedAt: string;
   createdAt: string;
+}
+
+export interface CandidatePreview {
+  name: string;
+  seniority: string;
+  topSkills: string[];
+  matchScore: number;
+  complianceStatus: Candidate['complianceStatus'];
+}
+
+export interface StaleCandidate extends Candidate {
+  lastRefreshedAt: string;
+  updatedAt: string;
+  linkedinUrl: string;
 }
 
 export interface ShortlistCandidate {
@@ -57,15 +65,13 @@ export interface JobRequirement {
 }
 
 export interface ReviewTask {
-  id: string; // e.g., 'ID-9921-X', 'CPL-402'
+  id: string;
   type: 'IDENTITY_CONFLICT' | 'COMPLIANCE_FLAG' | 'OUTREACH_DRAFT';
   title: string;
   timestamp: string;
   timeAgo: string;
   confidence: number;
   status: 'pending' | 'resolved' | 'purged';
-  
-  // For Identity Conflict
   existingRecord?: {
     uuid: string;
     name: string;
@@ -83,16 +89,12 @@ export interface ReviewTask {
     removedRole?: string;
   };
   recommendation?: string;
-
-  // For Compliance Flag
   complianceDetails?: {
     candidateName: string;
     reason: string;
     quarantineValue: string;
     details: string;
   };
-
-  // For Outreach Draft
   outreachDetails?: {
     targetName: string;
     subject: string;
@@ -103,9 +105,15 @@ export interface ReviewTask {
 
 export interface AuditEvent {
   id: string;
-  timestamp: string; // formatted date-time
-  action: string; // e.g. record_ingest
+  timestamp: string;
+  action: string;
   actor: 'SYS' | 'HUMAN' | 'SEC';
   payloadSummary: string;
   confidence: number;
+}
+
+export interface BulkRefreshResult {
+  success: number;
+  failed: number;
+  errors: { record_id?: string; error: string }[];
 }

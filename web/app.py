@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import uuid
 import shutil
@@ -7,7 +6,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional, Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -25,6 +24,8 @@ from core.config import (
     RECORD_INDEX_PATH,
     INTAKE_DIR,
     get_active_api_key_last4,
+    get_active_model,
+    get_use_local_llm,
     has_user_api_key,
     set_active_api_key,
 )
@@ -33,8 +34,7 @@ from core.review import get_review_queue, resolve_case, has_open_cases, _clear_r
 from core.events import log_event
 from core.schemas import CandidateRecord, Identity, Profile, Compliance, Scores
 
-app = FastAPI(title="Bloodhound Talent Pool Manager")
-TALENT_POOL_ADMIN_TOKEN = os.getenv("TALENT_POOL_ADMIN_TOKEN")
+app = FastAPI(title="Linnify AI Talent Pool Manager")
 
 app.add_middleware(
     CORSMiddleware,
@@ -46,12 +46,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-@app.get("/candidates", include_in_schema=False)
-async def legacy_candidates_page(request: Request):
-    if TALENT_POOL_ADMIN_TOKEN and request.headers.get("x-admin-token") != TALENT_POOL_ADMIN_TOKEN:
-        raise HTTPException(status_code=401, detail="Unauthorized")
-    return {"ok": True}
 
 # ---------------------------------------------------------------------------
 # App config (config.json at project root)
@@ -73,13 +67,13 @@ class AppConfig(BaseModel):
 
 
 class AppConfigResponse(AppConfig):
-    """Read shape — exposes whether a user key is set and its last-4 only."""
+    """Read shape - exposes whether a user key is set and its last-4 only."""
     gemini_api_key_set: bool = False
     gemini_api_key_last4: Optional[str] = None
 
 
 class AppConfigUpdate(AppConfig):
-    """Write shape — optional plaintext key.
+    """Write shape - optional plaintext key.
 
     - None  → leave key as-is
     - ""    → clear the stored key
@@ -147,6 +141,33 @@ async def post_config(body: AppConfigUpdate):
 
 class LinkedInPreviewBody(BaseModel):
     linkedinUrl: str
+
+
+class CVPreviewBody(BaseModel):
+    resumeText: str
+
+
+@app.post("/api/gemini/parse-cv")
+async def parse_cv_preview(body: CVPreviewBody):
+    text = body.resumeText.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="resumeText is required")
+
+    try:
+        from core.extract import extract_candidate_data
+        extraction, _model_info = extract_candidate_data(text)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"CV parsing failed: {e}")
+
+    return {
+        "candidate": {
+            "name": extraction.name or "Unknown",
+            "seniority": extraction.seniority or "Unknown",
+            "topSkills": [s.upper() for s in (extraction.technologies_used or [])[:5]],
+            "matchScore": extraction.extraction_confidence,
+            "complianceStatus": "PENDING REVIEW",
+        }
+    }
 
 
 @app.post("/api/gemini/parse-linkedin")
@@ -914,8 +935,7 @@ class BulkRefreshBody(BaseModel):
     ids: List[str]
 
 
-@app.post("/api/candidates/bulk-refresh")
-async def bulk_refresh_candidates(body: BulkRefreshBody):
+async def _bulk_refresh_candidates(body: BulkRefreshBody):
     from core.maintenance import bulk_refresh
 
     updates = []
@@ -940,6 +960,35 @@ async def bulk_refresh_candidates(body: BulkRefreshBody):
         result["failed"] = result.get("failed", 0) + len(missing)
         result.setdefault("errors", []).extend({"record_id": rid, "error": "Record not found"} for rid in missing)
     return result
+
+
+@app.post("/api/candidates/bulk-refresh")
+async def bulk_refresh_candidates(body: BulkRefreshBody):
+    return await _bulk_refresh_candidates(body)
+
+
+@app.post("/api/maintenance/bulk-refresh")
+async def maintenance_bulk_refresh_candidates(body: BulkRefreshBody):
+    return await _bulk_refresh_candidates(body)
+
+
+@app.get("/api/maintenance/stale")
+async def list_stale_candidates(months: int = 6):
+    from core.maintenance import find_stale_candidates
+
+    months = max(1, min(months, 60))
+    stale = []
+    for record_id in find_stale_candidates(months):
+        rec = load_record(record_id)
+        if rec and not rec.state.archived:
+            item = _map_candidate(record_id, rec)
+            item.update({
+                "lastRefreshedAt": rec.state.last_refreshed_at or "",
+                "updatedAt": rec.updated_at,
+                "linkedinUrl": rec.identity.linkedin_url or "",
+            })
+            stale.append(item)
+    return {"months": months, "candidates": stale}
 
 
 # ---------------------------------------------------------------------------
@@ -1024,7 +1073,7 @@ def _format_jobs_list(jobs: list, query: str = "") -> str:
     ] or jobs
     lines = [f"Found **{len(filtered)} job(s)**:\n"]
     for j in filtered[:10]:
-        lines.append(f"- **{j.get('title')}** — {j.get('department', '')} \u2022 {j.get('location', '')} `{j.get('status', 'MATCHING')}`")
+        lines.append(f"- **{j.get('title')}** - {j.get('department', '')} / {j.get('location', '')} `{j.get('status', 'MATCHING')}`")
     return "\n".join(lines)
 
 
@@ -1052,13 +1101,14 @@ async def gemini_chat(body: _GeminiChatBody):
 
     response_text = ""
 
-    from core.extract import _configure_genai, _lm_studio_available, _lm_studio_chat, MODEL_NAME
-    use_lm_studio = _lm_studio_available()
-    llm_ok = use_lm_studio or _configure_genai()
+    from core.extract import _configure_genai, _lm_studio_available, _lm_studio_chat
+    local_requested = get_use_local_llm()
+    use_lm_studio = local_requested and _lm_studio_available()
+    llm_ok = use_lm_studio or ((not local_requested) and _configure_genai())
 
     if llm_ok:
         system_prompt = (
-            f"You are the Bloodhound AI Copilot for a recruitment intelligence platform.\n\n"
+            f"You are the Linnify AI Talent Pool Manager assistant.\n\n"
             f"System status: {len(candidates)} candidates, {len(jobs)} jobs, {pending_count} pending compliance reviews.\n"
             f"Active jobs: {', '.join(j.get('title','') for j in jobs[:6]) or 'none'}.\n\n"
             f"Capabilities:\n"
@@ -1080,7 +1130,10 @@ async def gemini_chat(body: _GeminiChatBody):
                 history = []
                 for msg in messages[:-1]:
                     history.append({"role": "user" if msg["role"] == "user" else "model", "parts": [{"text": msg["content"]}]})
-                model = genai_module.GenerativeModel(model_name=MODEL_NAME, system_instruction=system_prompt)
+                model = genai_module.GenerativeModel(
+                    model_name=get_active_model("gemini-2.5-flash"),
+                    system_instruction=system_prompt,
+                )
                 chat_session = model.start_chat(history=history)
                 resp = chat_session.send_message(last_user_msg)
                 response_text = resp.text
@@ -1125,17 +1178,17 @@ async def gemini_chat(body: _GeminiChatBody):
                 actions_taken.append({"type": "job_created", "data": created})
                 skills_str = ", ".join(params["must_have"]) if params["must_have"] else "to be defined"
                 response_text = (
-                    f"Job **{params['title']}** has been created and is now live in the Job Match Matrix.\n\n"
+                    f"Job **{params['title']}** has been created and is ready for shortlisting.\n\n"
                     f"- **Location**: {params['location']}\n"
                     f"- **Department**: {params['department']}\n"
                     f"- **Required skills**: {skills_str}\n\n"
-                    "The matching engine will begin scoring candidates automatically."
+                    "Run shortlist from Jobs & Shortlist to rank candidates."
                 )
             else:
                 response_text = (
                     "I'd be happy to create a job! Please include the role details, for example:\n\n"
                     "_\"Create a job for a Senior Python Developer in London with FastAPI and Docker\"_\n\n"
-                    "Or use the **Create New Job** button in the Job Match Matrix screen."
+                    "Or use the **Create job** button in Jobs & Shortlist."
                 )
         elif search_intent:
             response_text = _format_jobs_list(jobs, last_user_msg)
@@ -1145,20 +1198,20 @@ async def gemini_chat(body: _GeminiChatBody):
                 f"- Total candidates: **{len(candidates)}**\n"
                 f"- Active jobs: **{len(jobs)}**\n"
                 f"- Pending compliance reviews: **{pending_count}**\n\n"
-                "Use the Candidate Pool screen for detailed filtering."
+                "Use the Talent Pool screen for detailed filtering."
             )
         elif any(p in lower_msg for p in ["compliance", "gdpr", "pending", "review"]):
             pending_tasks = [t for t in review_tasks if t.get("status") == "pending"]
             if pending_tasks:
                 lines = [f"**{len(pending_tasks)} pending compliance task(s):**\n"]
                 for t in pending_tasks[:5]:
-                    lines.append(f"- `{t.get('id','')[:8]}` \u2014 {t.get('type','UNKNOWN').replace('_',' ')}")
+                    lines.append(f"- `{t.get('id','')[:8]}` - {t.get('type','UNKNOWN').replace('_',' ')}")
                 response_text = "\n".join(lines)
             else:
                 response_text = "No pending compliance tasks. The candidate pool is fully compliant."
         else:
             response_text = (
-                f"I'm the **Bloodhound AI Copilot**. Here's what I can do:\n\n"
+                f"I'm the **Linnify Talent Pool assistant**. Here's what I can do:\n\n"
                 f"- **Create jobs**: _\"Create a job for a Senior React Developer in Berlin\"_\n"
                 f"- **Search jobs**: _\"Find all engineering roles\"_ or _\"Show remote jobs\"_\n"
                 f"- **Pool overview**: _\"How many candidates do we have?\"_\n"
@@ -1184,7 +1237,7 @@ if UI_DIST.exists():
     async def spa_fallback(full_path: str):
         index = UI_DIST / "index.html"
         if not index.exists():
-            raise HTTPException(status_code=404, detail="UI not built yet — run: cd ui && npm run build")
+            raise HTTPException(status_code=404, detail="UI not built yet - run: cd ui && npm run build")
         return FileResponse(str(index))
 
 

@@ -13,6 +13,23 @@
   "scoring": {},
   "shortlist": [
     {
+      "record_id": "cand_1c6b8752b18f",
+      "candidate_name": "Michael Hernandez",
+      "match_score": 0.9,
+      "evidence": [
+        "The candidate's 11 years of experience aligns perfectly with a 'Senior' level role.",
+        "Candidate possesses strong proficiency in multiple core backend programming languages including Java, Python, Node.js, and C++.",
+        "Direct experience with SQL, a fundamental skill for backend engineering involving database interaction.",
+        "Strong cloud and containerization/orchestration skills (AWS, Kubernetes, Docker) are highly relevant for modern backend systems and deployments.",
+        "Previous roles as a DevOps Engineer indicate valuable experience with the operational aspects, infrastructure, and deployment pipelines critical for backend services."
+      ],
+      "uncertainty_flags": [
+        "The job description provided no specific 'must-have' or 'nice-to-have' skills, making the evaluation based on general expectations for a Senior Backend Engineer.",
+        "The candidate summary is generic and lacks specific details about project achievements, architectural design experience, or particular backend frameworks used, which could provide more granular insights into their backend engineering depth."
+      ],
+      "review_required": true
+    },
+    {
       "record_id": "cand_43eff8a573f4",
       "candidate_name": "Susan Johnson",
       "match_score": 0.7833,
@@ -51,22 +68,12 @@
       ],
       "uncertainty_flags": [],
       "review_required": false
-    },
-    {
-      "record_id": "cand_1c6b8752b18f",
-      "candidate_name": "Michael Hernandez",
-      "match_score": 0.7333,
-      "evidence": [
-        "Structured-score fallback (LLM rerank unavailable). Senior | 11y exp | skills: Java, C++, Python"
-      ],
-      "uncertainty_flags": [],
-      "review_required": false
     }
   ],
   "shortlist_meta": {
     "funnel_size": 15,
     "total_filtered": 20,
-    "generated_at": "2026-05-24T08:50:13.785321Z"
+    "generated_at": "2026-05-24T09:27:57.277267Z"
   },
   "status": "MATCHING",
   "tags": [

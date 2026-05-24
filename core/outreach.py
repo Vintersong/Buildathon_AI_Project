@@ -6,7 +6,14 @@ try:
 except ImportError:
     genai = None
 
-from .config import get_active_api_key, get_active_model, get_use_local_llm, LM_STUDIO_MODEL
+from .config import (
+    ENABLE_EXTERNAL_OUTREACH_LLM,
+    GEMINI_API_KEY,
+    LM_STUDIO_MODEL,
+    get_active_api_key,
+    get_active_model,
+    get_use_local_llm,
+)
 from .store import load_record
 from .match import _load_requirement
 from .review import add_to_queue
@@ -51,7 +58,7 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
     draft_text = None
     use_local = get_use_local_llm()
 
-    if use_local or (get_active_api_key() and genai):
+    if use_local or (ENABLE_EXTERNAL_OUTREACH_LLM and (GEMINI_API_KEY or get_active_api_key()) and genai):
         anonymized = anonymize_candidate_record(candidate, candidate_id)
         prompt = (
             "Write an outreach email to CANDIDATE_001. "

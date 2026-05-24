@@ -5,7 +5,14 @@ from typing import List, Dict, Any, Tuple
 from datetime import datetime
 import google.generativeai as genai
 
-from .config import RECORDS_DIR, REQUIREMENTS_DIR, get_active_api_key, get_active_model, get_use_local_llm
+from .config import (
+    GEMINI_API_KEY,
+    RECORDS_DIR,
+    REQUIREMENTS_DIR,
+    get_active_api_key,
+    get_active_model,
+    get_use_local_llm,
+)
 from .schemas import CandidateRecord, RequirementRecord
 from .store import load_record
 from .math_utils import get_embedding, cosine_similarity, calculate_keyword_overlap
@@ -333,7 +340,7 @@ def generate_shortlist(
         final_score = base_score
 
         use_local = get_use_local_llm()
-        llm_route_ok = use_local or (ENABLE_EXTERNAL_LLM and get_active_api_key())
+        llm_route_ok = use_local or (ENABLE_EXTERNAL_LLM and (GEMINI_API_KEY or get_active_api_key()))
 
         if use_llm_rerank and llm_route_ok:
             anon = anonymize_candidate_record(rec, c_id)

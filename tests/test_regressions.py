@@ -384,6 +384,7 @@ class RegressionTests(unittest.TestCase):
         with patch.object(extract, "ENABLE_EXTERNAL_LLM", True), \
             patch.object(extract, "GEMINI_API_KEY", "test-key"), \
             patch.object(extract, "genai", FakeGenai), \
+            patch.object(extract, "get_use_local_llm", return_value=False), \
             patch.object(extract, "get_extraction_model", return_value=model):
             extraction, model_info = extract.extract_candidate_data(
                 "Ada Lovelace\nada@example.com\n+40 722 111 222\n"
@@ -416,6 +417,7 @@ class RegressionTests(unittest.TestCase):
         with patch.object(match, "ENABLE_EXTERNAL_LLM", True), \
             patch.object(match, "GEMINI_API_KEY", "test-key"), \
             patch.object(match, "genai", FakeGenai), \
+            patch.object(match, "get_use_local_llm", return_value=False), \
             patch.object(match, "get_rerank_model", return_value=model), \
             patch.object(match, "_load_requirement", return_value=req), \
             patch.object(match, "_get_all_active_candidates", return_value=["cand_test"]), \
@@ -451,6 +453,7 @@ class RegressionTests(unittest.TestCase):
         with patch.object(outreach, "ENABLE_EXTERNAL_OUTREACH_LLM", True), \
             patch.object(outreach, "GEMINI_API_KEY", "test-key"), \
             patch.object(outreach, "genai", FakeGenai), \
+            patch.object(outreach, "get_use_local_llm", return_value=False), \
             patch.object(outreach, "get_draft_model", return_value=model), \
             patch.object(outreach, "load_record", return_value=record), \
             patch.object(outreach, "_load_requirement", return_value=req), \
@@ -536,6 +539,96 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(len(list(records.glob("*.json"))), 1)
             self.assertEqual(len(list(requirements.glob("*.json"))), 1)
             add_to_queue.assert_called_once_with([review_case])
+
+    def test_candidate_role_eval_normalizes_labels_and_scores_invalid_predictions(self):
+        from core.candidate_role_eval import normalize_match_label
+        from tools.eval_candidates import CandidateRoleEvalExample, build_report
+
+        self.assertEqual(normalize_match_label("Match"), "match")
+        self.assertEqual(normalize_match_label("no match"), "no_match")
+        self.assertIsNone(normalize_match_label("maybe"))
+
+        examples = [
+            CandidateRoleEvalExample(2, "Python engineer", "Python role", "match"),
+            CandidateRoleEvalExample(3, "Sales manager", "Python role", "no_match"),
+        ]
+        report = build_report(examples, ["match", "maybe"], target=0.8)
+
+        self.assertEqual(report["accuracy"], 0.5)
+        self.assertFalse(report["pass"])
+        self.assertEqual(report["per_class"]["match"]["accuracy"], 1.0)
+        self.assertEqual(report["per_class"]["no_match"]["accuracy"], 0.0)
+        self.assertEqual(report["failed_examples"][0]["predicted"], "invalid")
+
+    def test_candidate_role_eval_dataset_validation(self):
+        from tools.eval_candidates import load_eval_dataset
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bad_path = Path(tmp) / "bad.csv"
+            bad_path.write_text("candidate_profile,ground_truth_label\nAda,match\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "missing required columns"):
+                load_eval_dataset(bad_path)
+
+            good_path = Path(tmp) / "good.csv"
+            good_path.write_text(
+                "candidate_profile,role_description,ground_truth_label\n"
+                "\"Senior Python engineer with 6 years of experience\","
+                "\"Python role requiring 5 years of experience\","
+                "match\n",
+                encoding="utf-8",
+            )
+            examples = load_eval_dataset(good_path)
+
+        self.assertEqual(len(examples), 1)
+        self.assertEqual(examples[0].ground_truth_label, "match")
+
+    def test_candidate_role_eval_script_returns_pass_fail_codes(self):
+        from tools import eval_candidates
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pass_path = Path(tmp) / "pass.csv"
+            pass_path.write_text(
+                "candidate_profile,role_description,ground_truth_label\n"
+                "\"Senior Python engineer with 6 years of experience in FastAPI and AWS\","
+                "\"Senior role requiring 5 years of experience with Python, FastAPI, and AWS\","
+                "match\n"
+                "\"Junior React developer with 1 year of experience\","
+                "\"Senior role requiring 5 years of experience with Python, FastAPI, and AWS\","
+                "no_match\n",
+                encoding="utf-8",
+            )
+            with patch("sys.stdout", io.StringIO()):
+                self.assertEqual(eval_candidates.main(["--data", str(pass_path), "--compact"]), 0)
+
+            fail_path = Path(tmp) / "fail.csv"
+            fail_path.write_text(
+                "candidate_profile,role_description,ground_truth_label\n"
+                "\"Senior Python engineer with 6 years of experience in FastAPI and AWS\","
+                "\"Senior role requiring 5 years of experience with Python, FastAPI, and AWS\","
+                "no_match\n",
+                encoding="utf-8",
+            )
+            with patch("sys.stdout", io.StringIO()):
+                self.assertEqual(eval_candidates.main(["--data", str(fail_path), "--compact"]), 1)
+
+    def test_match_candidate_to_role_returns_binary_eval_label(self):
+        from core.candidate_role_eval import match_candidate_to_role
+
+        self.assertEqual(
+            match_candidate_to_role(
+                "Senior data engineer with 6 years of experience in Spark, Airflow, Python, SQL, and AWS.",
+                "Data Engineer role requiring 4+ years of experience with Spark, Airflow, Python, SQL, and AWS.",
+            ),
+            "match",
+        )
+        self.assertEqual(
+            match_candidate_to_role(
+                "Junior frontend developer with 1 year of experience in React and CSS.",
+                "Data Engineer role requiring 4+ years of experience with Spark, Airflow, Python, SQL, and AWS.",
+            ),
+            "no_match",
+        )
 
 
 if __name__ == "__main__":

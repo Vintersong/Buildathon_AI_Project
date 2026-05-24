@@ -74,11 +74,11 @@ def _score_candidate(
     skills_score = kw.get(candidate_id, 0.0)
     s = structured.get(candidate_id, {})
     return (
-        skills_score * weights["skills"]
-        + s.get("experience", 0.0) * weights["experience"]
-        + s.get("location", 0.0) * weights["location"]
-        + s.get("language", 0.0) * weights["language"]
-        + s.get("freshness", 0.0) * weights["freshness"]
+        skills_score * weights.get("skills", 1.0)
+        + s.get("experience", 0.0) * weights.get("experience", 0.0)
+        + s.get("location", 0.0) * weights.get("location", 0.0)
+        + s.get("language", 0.0) * weights.get("language", 0.0)
+        + s.get("freshness", 0.0) * weights.get("freshness", 0.0)
     )
 
 

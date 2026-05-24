@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.config import get_active_api_key, get_active_model
-from core.extract import extract_candidate_data
+from core.extract import extract_candidate_data, extract_candidate_data_heuristic
 
 
 def _seniority_match(predicted: str | None, expected: str) -> float:
@@ -96,7 +96,10 @@ def evaluate_extraction(
         expected: dict = case["expected"]
 
         try:
-            extraction, _ = extract_candidate_data(cv_text)
+            if use_llm:
+                extraction, _ = extract_candidate_data(cv_text)
+            else:
+                extraction, _ = extract_candidate_data_heuristic(cv_text)
         except Exception as exc:
             for field in expected:
                 results.append({"field": field, "score": 0.0, "error": str(exc)})

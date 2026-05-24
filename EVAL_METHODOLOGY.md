@@ -5,6 +5,9 @@ Linnify's brief requires *"a set of clearly defined metrics to test accuracy... 
 ## TL;DR — Run It
 
 ```bash
+# Primary candidate-role matching KPI (offline, deterministic)
+python -m tools.eval_candidates
+
 # With your Gemini key set in Settings (or via GEMINI_API_KEY env)
 python -m core.eval.run_eval
 
@@ -22,10 +25,10 @@ The brief defines four modules. Each gets its own metric — chosen so that "goo
 | ---------------------------- | ---------------------------------------- | ------ | ---------- |
 | 1. CV / LinkedIn extraction  | Per-field accuracy (avg across 10 CVs)   | ≥ 0.85 | Automated  |
 | 2. Talent-pool maintenance   | Refresh staleness coverage               | ≥ 0.95 | Manual     |
-| 3. Shortlisting              | Top-1 hit rate (10 job/candidate cases)  | ≥ 0.80 | Automated  |
+| 3. Candidate-role matching   | Exact label accuracy on CSV eval set     | >= 0.80 | Automated  |
 | 4. Outreach drafts           | Personalisation + tone (LLM-as-judge)    | ≥ 0.75 | Spec-only  |
 
-"Automated" = covered by `python -m core.eval.run_eval`.
+"Automated" = covered by `python -m tools.eval_candidates` for the primary candidate-role KPI, plus `python -m core.eval.run_eval` for the legacy extraction/ranking harness.
 "Manual" / "Spec-only" = methodology defined here, no harness yet.
 
 ---
@@ -58,17 +61,27 @@ The brief specifies bulk refresh + "auto-update profiles untouched in 6 months".
 
 ---
 
-## 3. Shortlisting Accuracy
+## 3. Candidate-Role Matching Accuracy
 
-**Code**: `core/eval/eval_matching.py`
-**Golden set**: 10 job/candidate scenarios in `GOLDEN_MATCHES`. Each is a requirement + 2–3 candidates with a designated "correct winner".
+**Code**: `tools/eval_candidates.py` and `core/candidate_role_eval.py`
+**Dataset**: `tests/data/candidate_role_eval.csv`
 
-**Metric**: top-1 hit rate — does the candidate ranked #1 by our scoring pipeline equal the expected winner?
-**Target**: ≥ 0.80 (matches the brief's stated example: *"80 % accuracy matching candidates to roles"*).
+**Task**: given one free-text `candidate_profile` and one free-text `role_description`, decide whether the candidate is a good fit for the role.
 
-**Pipeline scored**: `score_keywords` × `_scoring_weights["skills"]` + structured signals (experience, location, language, freshness). The full production path *also* runs an embedding rerank + LLM rerank on top of this; the eval intentionally measures the deterministic substrate so the score is reproducible without API quota. To evaluate the full LLM rerank quality, run `generate_shortlist` against the same golden set and compare top-1 to `expected_winner_index`.
+**Label space**: `match` / `no_match`
 
-**Why top-1 and not NDCG**: a recruiter scanning a shortlist looks at the top few. Getting #1 wrong is more painful than ordering #4 vs #5 wrong. We accept the simplicity loss.
+**Primary metric**: exact match accuracy = correct predicted labels / total examples.
+**Target**: >= 0.80 (matches the brief's stated example: "80% accuracy matching candidates to roles").
+
+**How to run**:
+
+```bash
+python -m tools.eval_candidates
+```
+
+The script loads the CSV, wraps `match_candidate_to_role(...)` in a LangChain `RunnableLambda`, scores each row, prints a JSON report, and exits `0` only when the accuracy target passes.
+
+**Why this is deterministic**: the matcher uses repo-local skill, seniority, and years-of-experience signals rather than Gemini or LM Studio. That makes the KPI repeatable offline and suitable for CI. The older shortlist ranking eval in `core/eval/eval_matching.py` remains useful for comparing ranked shortlist behavior, but the CSV binary eval is the primary "candidate matches role" accuracy measure.
 
 ---
 

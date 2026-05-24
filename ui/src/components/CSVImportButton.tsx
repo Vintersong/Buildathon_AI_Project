@@ -21,15 +21,14 @@ export default function CSVImportButton({ onDone, onToast }: Props) {
   };
 
   const handleFile = async (file: File) => {
-    if (!file.name.endsWith('.csv')) {
-      onToast('Only .csv files are supported.', 'error');
+    if (!/\.(csv|xlsx|xlsm)$/i.test(file.name)) {
+      onToast('Only .csv, .xlsx, and .xlsm files are supported.', 'error');
       return;
     }
     setUploading(true);
     setProgress(null);
     try {
       const { task_id } = await startCSVIngest(file);
-      // Start polling every 1.5 s
       pollRef.current = setInterval(async () => {
         try {
           const p = await pollCSVIngest(task_id);
@@ -38,7 +37,7 @@ export default function CSVImportButton({ onDone, onToast }: Props) {
             stopPolling();
             setUploading(false);
             onToast(
-              `CSV import done — ${p.processed} added, ${p.skipped} skipped, ${p.failed} failed.`,
+              `Spreadsheet import done: ${p.processed} candidate(s), ${p.jobs_created} job(s), ${p.skipped} skipped, ${p.failed} failed.`,
               p.failed > 0 ? 'info' : 'success',
             );
             await onDone();
@@ -51,21 +50,18 @@ export default function CSVImportButton({ onDone, onToast }: Props) {
       }, 1500);
     } catch (e) {
       setUploading(false);
-      onToast(e instanceof Error ? e.message : 'CSV upload failed', 'error');
+      onToast(e instanceof Error ? e.message : 'Spreadsheet upload failed', 'error');
     }
   };
 
-  const pct =
-    progress && progress.total > 0
-      ? Math.round(((progress.processed + progress.skipped + progress.failed) / progress.total) * 100)
-      : null;
+  const pct = progress && progress.total > 0 ? Math.round((progress.rows_seen / progress.total) * 100) : null;
 
   return (
     <div className="flex flex-col gap-2">
       <input
         ref={inputRef}
         type="file"
-        accept=".csv"
+        accept=".csv,.xlsx,.xlsm"
         className="hidden"
         onChange={(e) => {
           const file = e.target.files?.[0];
@@ -84,7 +80,7 @@ export default function CSVImportButton({ onDone, onToast }: Props) {
         ) : (
           <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
         )}
-        Import CSV
+        Import CSV/Excel
       </button>
 
       {progress && (
@@ -102,13 +98,12 @@ export default function CSVImportButton({ onDone, onToast }: Props) {
                   </span>
                 )
               ) : (
-                'Importing…'
+                'Importing...'
               )}
             </span>
             {pct !== null && <span className="text-slate-500">{pct}%</span>}
           </div>
 
-          {/* Progress bar */}
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
             <div
               className="h-full rounded-full bg-cyan-500 transition-all duration-300"
@@ -116,10 +111,11 @@ export default function CSVImportButton({ onDone, onToast }: Props) {
             />
           </div>
 
-          <div className="mt-2 flex gap-4 text-slate-500">
-            <span>✓ {progress.processed}</span>
-            <span>⟳ {progress.skipped} skipped</span>
-            {progress.failed > 0 && <span className="text-rose-600">✕ {progress.failed} failed</span>}
+          <div className="mt-2 flex flex-wrap gap-4 text-slate-500">
+            <span>{progress.processed} candidates</span>
+            <span>{progress.jobs_created} jobs</span>
+            <span>{progress.skipped} skipped</span>
+            {progress.failed > 0 && <span className="text-rose-600">{progress.failed} failed</span>}
           </div>
 
           {progress.errors.length > 0 && (

@@ -212,9 +212,11 @@ export function sendAssistantMessage(
 
 export interface CSVIngestProgress {
   total: number;
+  rows_seen: number;
   processed: number;
   skipped: number;
   failed: number;
+  jobs_created: number;
   errors: { row: number; error: string }[];
   done: boolean;
   started_at: string;

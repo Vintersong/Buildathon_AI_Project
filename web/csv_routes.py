@@ -8,7 +8,7 @@ import threading
 from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from .csv_tasks import create_task, get_task, prune_old_tasks
-from core.csv_ingest import stream_ingest_csv
+from core.csv_ingest import stream_ingest_file
 
 csv_router = APIRouter(prefix="/api/intake/csv", tags=["csv-ingest"])
 
@@ -16,14 +16,18 @@ csv_router = APIRouter(prefix="/api/intake/csv", tags=["csv-ingest"])
 _MAX_BYTES = 50 * 1024 * 1024
 
 
-@csv_router.post("", summary="Start a background CSV bulk ingest")
+_SUPPORTED_SUFFIXES = (".csv", ".xlsx", ".xlsm")
+
+
+@csv_router.post("", summary="Start a background spreadsheet bulk ingest")
 async def start_csv_ingest(file: UploadFile = File(...)):
     """
-    Upload a CSV file and start a background ingest task.
+    Upload a CSV/Excel file and start a background ingest task.
     Returns {task_id} immediately — poll GET /api/intake/csv/{task_id} for progress.
     """
-    if not (file.filename or "").lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Only .csv files are accepted")
+    filename = file.filename or ""
+    if not filename.lower().endswith(_SUPPORTED_SUFFIXES):
+        raise HTTPException(status_code=400, detail="Only .csv, .xlsx, and .xlsm files are accepted")
 
     content = await file.read()
     if len(content) > _MAX_BYTES:
@@ -38,8 +42,8 @@ async def start_csv_ingest(file: UploadFile = File(...)):
 
     # Run in a background thread so the HTTP response returns immediately
     thread = threading.Thread(
-        target=stream_ingest_csv,
-        args=(content, progress),
+        target=stream_ingest_file,
+        args=(content, filename, progress),
         daemon=True,
         name=f"csv-ingest-{task_id[:8]}",
     )

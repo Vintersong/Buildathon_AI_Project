@@ -1,5 +1,6 @@
 import json
 import asyncio
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -462,6 +463,79 @@ class RegressionTests(unittest.TestCase):
         self.assertNotIn("ada@example.com", prompt)
         self.assertIn("Hi Ada Lovelace", captured_cases[0]["draft_text"])
         self.assertNotIn("CANDIDATE_001", captured_cases[0]["draft_text"])
+
+    def test_spreadsheet_import_route_is_mounted(self):
+        import web.app as web_app
+
+        self.assertIn("/api/intake/csv", {route.path for route in web_app.app.routes})
+
+    def test_spreadsheet_import_rejects_unknown_csv_schema_loudly(self):
+        from core.csv_ingest import CSVIngestProgress, stream_ingest_file
+
+        progress = CSVIngestProgress()
+        stream_ingest_file(b"foo;bar\nx;y\n", "bad.csv", progress)
+
+        self.assertTrue(progress.done)
+        self.assertEqual(progress.failed, 1)
+        self.assertIn("No recognized candidate or job columns", progress.errors[0]["error"])
+
+    def test_spreadsheet_imports_excel_candidate_job_and_review_case(self):
+        from core import csv_ingest, store
+        from core.csv_ingest import CSVIngestProgress, stream_ingest_file
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append([
+            "candidate_name",
+            "email",
+            "skills",
+            "career_objective",
+            "job_position_name",
+            "skills_required",
+            "responsibilities.1",
+        ])
+        sheet.append([
+            "Ada Lovelace",
+            "ada@example.com",
+            "['Python', 'FastAPI']",
+            "Builds analytical engines.",
+            "Python Engineer",
+            "['Python']",
+            "Build APIs.",
+        ])
+        payload = io.BytesIO()
+        workbook.save(payload)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            records = base / "records"
+            indexes = base / "indexes"
+            requirements = base / "requirements"
+            records.mkdir()
+            indexes.mkdir()
+            requirements.mkdir()
+            (indexes / "record_index.json").write_text("{}", encoding="utf-8")
+
+            review_case = {"case_id": "case_test", "record_id": "cand_test", "reason": "low_extraction_confidence"}
+            with patch.object(store, "RECORDS_DIR", records), \
+                patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"), \
+                patch.object(store, "log_event"), \
+                patch.object(csv_ingest, "RECORDS_DIR", records), \
+                patch.object(csv_ingest, "REQUIREMENTS_DIR", requirements), \
+                patch.object(csv_ingest, "evaluate_compliance", return_value=[review_case]), \
+                patch.object(csv_ingest, "add_to_queue") as add_to_queue:
+                progress = CSVIngestProgress()
+                stream_ingest_file(payload.getvalue(), "bulk.xlsx", progress)
+
+            self.assertTrue(progress.done)
+            self.assertEqual(progress.failed, 0, progress.errors)
+            self.assertEqual(progress.rows_seen, 1)
+            self.assertEqual(progress.processed, 1)
+            self.assertEqual(progress.jobs_created, 1)
+            self.assertEqual(len(list(records.glob("*.json"))), 1)
+            self.assertEqual(len(list(requirements.glob("*.json"))), 1)
+            add_to_queue.assert_called_once_with([review_case])
 
 
 if __name__ == "__main__":

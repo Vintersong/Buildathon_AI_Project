@@ -12,3 +12,4 @@ langchain>=0.2
 langchain-google-genai>=1.0
 pytesseract>=0.3.10
 Pillow>=10.0
+openpyxl>=3.1

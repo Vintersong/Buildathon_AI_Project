@@ -106,7 +106,6 @@ export default function App() {
       return (
         <JobsPage
           jobs={jobs}
-          reviewTasks={reviewTasks}
           searchQuery={searchQuery}
           onRefresh={refreshAll}
           onToast={showToast}

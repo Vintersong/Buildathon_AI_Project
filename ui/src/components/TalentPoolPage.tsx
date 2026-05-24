@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import * as api from '../api';
 import { Candidate, CandidateDetail } from '../types';
+import CSVImportButton from './CSVImportButton';
 
 interface TalentPoolPageProps {
   candidates: Candidate[];
@@ -297,6 +298,7 @@ export default function TalentPoolPage({
           ))}
         </div>
         <div className="flex flex-wrap gap-2">
+          <CSVImportButton onDone={onRefresh} onToast={onToast} />
           <button
             type="button"
             onClick={bulkRefresh}

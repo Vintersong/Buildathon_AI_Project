@@ -31,13 +31,22 @@ The repository root contains `requirements.txt`, `config.json`, and the main cod
 
 ## 2. Python environment & dependencies
 
-1. (Optional) Create and activate a virtual environment:
+To keep things clean it is recommended to use a Python virtual environment.
+
+1. Create and activate a virtual environment:
+
+   **Linux / macOS:**
 
    ```bash
    python -m venv .venv
-   source .venv/bin/activate      # Linux / macOS
-   # or
-   .venv\Scripts\activate         # Windows
+   source .venv/bin/activate
+   ```
+
+   **Windows (PowerShell):**
+
+   ```powershell
+   python -m venv .venv
+   .venv\Scripts\Activate.ps1
    ```
 
 2. Install dependencies for the backend:
@@ -198,25 +207,25 @@ This project appears to have both `ui/` and `web/` directories for the interface
 Typical pattern:
 
 1. Start the backend (section 4.3 or 5.4).
-2. In a new terminal, move into the UI directory:
+2. In a new terminal, move into the UI directory and start the frontend dev server.
+
+   **Using the `web` frontend (recommended):**
 
    ```bash
    cd web
-   # or
-   cd ui
+   npm install
+   npm run dev
    ```
 
-3. Follow the readme or package file there:
-   - If it is a JavaScript/TypeScript frontend, you will likely run:
+   **If using a UI under `ui/` instead:**
 
-     ```bash
-     npm install
-     npm run dev
-     ```
+   ```bash
+   cd ui
+   npm install
+   npm run dev
+   ```
 
-   - Or another command indicated by the scripts in `package.json` within that directory.
-
-4. Open the local URL printed by the UI dev server (commonly `http://localhost:5173` or `http://localhost:3000`) in your browser.
+3. Open the local URL printed by the UI dev server (commonly `http://localhost:5173` or `http://localhost:3000`) in your browser.
 
 From there, you can interact with the system end-to-end: the UI talks to the backend, and the backend talks either to LM Studio or your chosen hosted provider.
 

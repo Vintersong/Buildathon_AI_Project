@@ -1,0 +1,24 @@
+{
+  "id": "req_060be25db296",
+  "title": "System Administrator (Operation & Maintenance of Server, Storage & Service Desk System)",
+  "department": "Imported",
+  "description": "Hardware & Network Installation\nTroubleshooting & Diagnostics\nUser Training & Capacity Building\nHardware Replacement\nFault Repair & System Setup\nSoftware License & Account Management\nBackup Management\nSystem Updates & Maintenance\nServer & Storage Management\nDocumentation & Technical Specifications\nData Protection & Disaster Recovery\nStorage & Database Planning\nPower & Disk Backup\nIncident Management & Escalation\nService Restoration\nUser Communication & Verification\nIncident Classification & Resolution\nMajor Incident Escalation\nProblem & Error Management\nTask Assignment & Execution\nEducation: Bachelor/Honors\nExperience: 4 to 5 years",
+  "requirements": {
+    "must_have": [
+      "Cisco\nLinux\nOperation & Maintenance of Server"
+    ],
+    "nice_to_have": [],
+    "location": null,
+    "language": [],
+    "category": null
+  },
+  "scoring": {},
+  "shortlist": [],
+  "shortlist_meta": {},
+  "status": "MATCHING",
+  "tags": [
+    "Cisco\nLinux\nOperation & Maintenance of Server"
+  ],
+  "created_at": "2026-05-24T12:34:33.198563Z",
+  "updated_at": "2026-05-24T12:34:33.198563Z"
+}

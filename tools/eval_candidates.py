@@ -85,7 +85,7 @@ def run_predictions(examples: Sequence[CandidateRoleEvalExample]) -> list[str]:
         }
         for example in examples
     ]
-    return list(matcher.batch(payloads))
+    return list(matcher.batch(payloads, config={"max_concurrency": 2}))
 
 
 def build_report(
@@ -143,8 +143,10 @@ def build_report(
     }
 
 
-def evaluate_dataset(path: Path = DEFAULT_DATA_PATH, target: float = DEFAULT_TARGET) -> dict:
+def evaluate_dataset(path: Path = DEFAULT_DATA_PATH, target: float = DEFAULT_TARGET, limit: int | None = None) -> dict:
     examples = load_eval_dataset(path)
+    if limit is not None:
+        examples = examples[:limit]
     predictions = run_predictions(examples)
     report = build_report(examples, predictions, target=target)
     report["dataset"] = str(path)
@@ -156,10 +158,11 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA_PATH, help="CSV dataset path.")
     parser.add_argument("--target", type=float, default=DEFAULT_TARGET, help="Required accuracy threshold.")
     parser.add_argument("--compact", action="store_true", help="Print compact JSON.")
+    parser.add_argument("--limit", type=int, default=None, help="Max number of examples to evaluate (default: all).")
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     try:
-        report = evaluate_dataset(args.data, target=args.target)
+        report = evaluate_dataset(args.data, target=args.target, limit=args.limit)
     except Exception as exc:
         print(f"Candidate-role eval failed to start: {exc}", file=sys.stderr)
         return 2

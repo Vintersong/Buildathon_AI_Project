@@ -131,7 +131,38 @@ def extract_match_signals(text: str) -> MatchSignals:
 
 
 def match_candidate_to_role(candidate_profile: str, role_description: str) -> str:
-    """Return the discrete eval label: 'match' or 'no_match'."""
+    """Return the discrete eval label: 'match' or 'no_match'.
+
+    When LM Studio is reachable (http://localhost:1234) the decision is made by
+    the loaded LLM.  Falls back to the local heuristic if LM Studio is down or
+    the 'openai' package is missing.
+    """
+    try:
+        from openai import OpenAI
+        from .config import LM_STUDIO_MODEL, LM_STUDIO_BASE_URL
+
+        client = OpenAI(base_url=LM_STUDIO_BASE_URL, api_key="lm-studio")
+        prompt = (
+            "You are an expert recruiter evaluating whether a candidate profile matches a job role.\n\n"
+            f"CANDIDATE PROFILE:\n{candidate_profile}\n\n"
+            f"JOB ROLE:\n{role_description}\n\n"
+            "Reply with exactly one word: 'match' if the candidate meets the role requirements, "
+            "or 'no_match' if they do not. No explanation, no punctuation — just the word."
+        )
+        resp = client.chat.completions.create(
+            model=LM_STUDIO_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0,
+            max_tokens=512,  # thinking model needs budget for reasoning before output
+        )
+        raw = (resp.choices[0].message.content or "").strip().lower()
+        label = normalize_match_label(raw)
+        if label:
+            return label
+        print(f"[eval] WARNING: LLM returned unexpected output {raw!r}, falling back to heuristic", flush=True)
+    except Exception as exc:
+        print(f"[eval] WARNING: LM Studio unavailable ({exc}), falling back to heuristic", flush=True)
+
     return score_candidate_role_match(candidate_profile, role_description).label
 
 

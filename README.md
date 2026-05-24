@@ -122,21 +122,16 @@ This mode runs the model on your own machine via LM Studio’s local server.
 
 ### 4.3 Run the backend with LM Studio
 
-From the repo root, start the main backend process. Depending on how the project is structured, it might look like:
+From the repo root:
 
 ```bash
-python -m core.main
-# or
-python core/main.py
-# or another documented entrypoint in core/
+python -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-Check the scripts or `core/` package to confirm the actual command used in this version of the repo.
+The API will be available at `http://127.0.0.1:8080`.  
+The built React UI is served automatically from the same port — open `http://127.0.0.1:8080` in your browser.
 
-Once the backend is running:
-
-- Open the UI (see section 6) and interact with the system.
-- All model calls should go to LM Studio’s local server, with no external API usage.
+Once the backend is running all model calls go to LM Studio’s local server with no external API usage.
 
 ---
 
@@ -189,11 +184,10 @@ The backend will combine `config.json` with your environment variables when maki
 
 ### 5.4 Run the backend with hosted API
 
-With your environment variable set and `config.json` pointing to the API provider, start the backend as in LM Studio mode:
+With your environment variable set and `config.json` pointing to the API provider:
 
 ```bash
-python -m core.main
-# or equivalent entrypoint
+python -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload
 ```
 
 Requests will now be sent to the hosted API instead of LM Studio.
@@ -202,32 +196,36 @@ Requests will now be sent to the hosted API instead of LM Studio.
 
 ## 6. Running the UI
 
-This project appears to have both `ui/` and `web/` directories for the interface layer.
+The React UI is pre-built in `ui/dist/` and served automatically by the backend at `http://127.0.0.1:8080`. **No separate UI process is needed for normal use** — just start the backend (section 4.3 or 5.4) and open that URL.
 
-Typical pattern:
+### 6.1 Rebuilding the UI (after frontend changes)
 
-1. Start the backend (section 4.3 or 5.4).
-2. In a new terminal, move into the UI directory and start the frontend dev server.
+If you modify anything under `ui/src/`, rebuild before restarting the backend:
 
-   **Using the `web` frontend (recommended):**
+```bash
+cd ui
+npm install       # first time only
+npm run build
+```
 
-   ```bash
-   cd web
-   npm install
-   npm run dev
-   ```
+Then restart the backend server.
 
-   **If using a UI under `ui/` instead:**
+### 6.2 Frontend dev server (hot reload)
 
-   ```bash
-   cd ui
-   npm install
-   npm run dev
-   ```
+For active frontend development, run the Vite dev server alongside the backend:
 
-3. Open the local URL printed by the UI dev server (commonly `http://localhost:5173` or `http://localhost:3000`) in your browser.
+**Terminal 1 — backend:**
+```bash
+python -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload
+```
 
-From there, you can interact with the system end-to-end: the UI talks to the backend, and the backend talks either to LM Studio or your chosen hosted provider.
+**Terminal 2 — frontend dev server:**
+```bash
+cd ui
+npm run dev
+```
+
+Open `http://localhost:5173` — it proxies API calls to the backend on port 8080.
 
 ---
 
@@ -246,7 +244,28 @@ You do not need to change code when switching; configuration and environment var
 
 ---
 
-## 8. Troubleshooting
+## 8. Running the LangChain benchmark
+
+The project includes a binary candidate-role matching evaluation powered by LangChain. It uses LM Studio when available and falls back to a local heuristic automatically.
+
+```bash
+# Full run (32 examples — needs LM Studio, may be slow on low-end hardware)
+python -m tools.eval_candidates
+
+# Lightweight run (recommended for demos / CI)
+python -m tools.eval_candidates --limit 6
+
+# Custom dataset or accuracy target
+python -m tools.eval_candidates --data tests/data/candidate_role_eval.csv --target 0.8
+```
+
+Exit code `0` = pass, `1` = below target, `2` = startup error.
+
+---
+
+## 9. Troubleshooting
+
+
 
 - **Backend cannot reach model**  
   - Check `config.json` values (URL, model name).  

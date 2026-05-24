@@ -123,7 +123,7 @@ def get_confidence_threshold(default: float = 0.85) -> float:
 # LM Studio model identifier sent in the OpenAI-compatible chat request.
 # "local-model" is the legacy default; recent LM Studio versions ignore the
 # model field when only one is loaded but newer ones require the exact slug.
-LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "gemma4be")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "google/gemma-4-e4b")
 LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
 
 # Feature flags

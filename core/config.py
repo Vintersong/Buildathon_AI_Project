@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
-load_dotenv()
-
 # Base project directory
 BASE_DIR = Path(__file__).parent.parent
+
+load_dotenv(BASE_DIR / ".env")
 
 # Local secrets file (gitignored). Keeps user-supplied API keys out of config.json
 # (which is committed). On Windows we cannot rely on chmod, so secrecy depends on

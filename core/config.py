@@ -1,1 +1,137 @@
-{{CONFIG_PY}}
+import json
+import os
+from pathlib import Path
+from typing import Optional
+
+from filelock import FileLock
+
+# ---------------------------------------------------------------------------
+# Base directories
+# ---------------------------------------------------------------------------
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+DATA_DIR = PROJECT_ROOT / "data"
+RECORDS_DIR = DATA_DIR / "candidates"
+REQUIREMENTS_DIR = DATA_DIR / "requirements"
+INTAKE_DIR = DATA_DIR / "intake"
+QUARANTINE_DIR = DATA_DIR / "quarantine"
+LOGS_DIR = DATA_DIR / "logs"
+
+RECORD_INDEX_PATH = DATA_DIR / "record_index.json"
+INGEST_MANIFEST_PATH = DATA_DIR / "ingest_manifest.json"
+COMPLIANCE_LOG_PATH = LOGS_DIR / "compliance_log.jsonl"
+ERROR_LOG_PATH = LOGS_DIR / "error_log.jsonl"
+AUDIT_LOG_PATH = LOGS_DIR / "audit_log.jsonl"
+
+# ---------------------------------------------------------------------------
+# API key management (.secrets.json — gitignored)
+# ---------------------------------------------------------------------------
+
+_SECRETS_PATH = PROJECT_ROOT / ".secrets.json"
+
+
+def _load_secrets() -> dict:
+    try:
+        with open(_SECRETS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_secrets(data: dict) -> None:
+    lock = FileLock(f"{_SECRETS_PATH}.lock")
+    with lock:
+        tmp = _SECRETS_PATH.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        tmp.replace(_SECRETS_PATH)
+
+
+def get_active_api_key() -> Optional[str]:
+    """Return the user-supplied key from .secrets.json, falling back to the env var."""
+    secrets = _load_secrets()
+    return secrets.get("gemini_api_key") or GEMINI_API_KEY
+
+
+def get_active_api_key_last4() -> Optional[str]:
+    key = get_active_api_key()
+    return key[-4:] if key and len(key) >= 4 else None
+
+
+def has_user_api_key() -> bool:
+    """True when a key has been explicitly stored in .secrets.json (not just env var)."""
+    secrets = _load_secrets()
+    return bool(secrets.get("gemini_api_key"))
+
+
+def set_active_api_key(key: Optional[str]) -> None:
+    """Persist (or clear) the user-supplied Gemini key in .secrets.json."""
+    secrets = _load_secrets()
+    if key:
+        secrets["gemini_api_key"] = key
+    else:
+        secrets.pop("gemini_api_key", None)
+    _save_secrets(secrets)
+
+
+# ---------------------------------------------------------------------------
+# LLM / model configuration
+# ---------------------------------------------------------------------------
+
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Override the default model via env var or app config
+def get_active_model(default: str) -> str:
+    """Return the model name from app config (config.json) if set, else default."""
+    config_path = PROJECT_ROOT / "config.json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get("model") or default
+    except (FileNotFoundError, json.JSONDecodeError):
+        return default
+
+
+def get_use_local_llm() -> bool:
+    config_path = PROJECT_ROOT / "config.json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return bool(cfg.get("use_local_llm", False))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return False
+
+
+def get_confidence_threshold() -> float:
+    config_path = PROJECT_ROOT / "config.json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return float(cfg.get("confidence_threshold", 0.85))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return 0.85
+
+
+# LM Studio local server configuration
+LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
+
+# ---------------------------------------------------------------------------
+# Feature flags
+# ---------------------------------------------------------------------------
+
+# Set ENABLE_EXTERNAL_OUTREACH_LLM=true in .env to allow the outreach module
+# to call Gemini for email drafting. Defaults to false (template mode).
+ENABLE_EXTERNAL_OUTREACH_LLM = os.getenv("ENABLE_EXTERNAL_OUTREACH_LLM", "false").lower() == "true"
+
+# Feature flag — when False the external LLM call is skipped in extract and match modules
+# (safe for air-gapped / no-key deploys). Defaults to true.
+ENABLE_EXTERNAL_LLM = os.getenv("ENABLE_EXTERNAL_LLM", "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Retention / stale thresholds
+# ---------------------------------------------------------------------------
+
+# Number of months before a record is considered stale and eligible for refresh.
+STALE_REFRESH_MONTHS = int(os.getenv("STALE_REFRESH_MONTHS", "6"))

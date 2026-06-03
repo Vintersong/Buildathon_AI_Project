@@ -20,7 +20,7 @@ from .config import (
 from .schemas import CandidateRecord, State, Compliance, Scores
 from .store import save_record, load_record, record_exists
 from .extract import extract_candidate_data
-from .dedup import find_duplicate
+from .dedup import find_existing_by_identity as find_duplicate
 from .compliance import check_and_generate_review_cases
 
 MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "10"))

@@ -5,6 +5,7 @@ _reference
 __pycache__/
 *.py[cod]
 venv/
+.venv/
 records/
 indexes/
 logs/

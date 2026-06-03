@@ -225,9 +225,9 @@ def llm_rerank_candidates(
     Stage 4: LLM rerank — deep contextual reasoning over the funnel.
     Returns candidates sorted by LLM match_score descending.
     """
-    use_local = get_use_local_llm()
+    from . import llm
 
-    llm_route_ok = use_local or (ENABLE_EXTERNAL_LLM and (GEMINI_API_KEY or get_active_api_key()))
+    llm_route_ok = ENABLE_EXTERNAL_LLM and llm.llm_available()
     if not llm_route_ok:
         return sorted(candidates, key=lambda c: c.get("embedding_score", 0), reverse=True)[:top_n]
 
@@ -265,23 +265,7 @@ def llm_rerank_candidates(
         ]
 
         try:
-            if use_local:
-                from .extract import _lm_studio_rerank
-                raw = _lm_studio_rerank(prompt_messages)
-            else:
-                if not _configure_genai():
-                    raise ValueError("No API key")
-                model = genai.GenerativeModel(
-                    model_name=get_active_model(DEFAULT_RERANK_MODEL),
-                    generation_config={"response_mime_type": "application/json"},
-                )
-                response = model.generate_content(
-                    f"JOB:\n{job_text}\n\nCANDIDATE (anonymized):\n{anon.anonymized_text}\n\n"
-                    "Rate the match. Return JSON: "
-                    '{"match_score": 0.0-1.0, "evidence": ["..."], "uncertainty_flags": ["..."]}'
-                )
-                raw = response.text
-
+            raw = llm.complete(prompt_messages, json_mode=True, schema="rerank")
             result = json.loads(raw)
             cand["llm_score"] = float(result.get("match_score", 0.5))
             cand["evidence"] = result.get("evidence", [])

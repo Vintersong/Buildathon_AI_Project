@@ -142,22 +142,17 @@ def _lm_studio_rerank(messages: list) -> str:
     return result["choices"][0]["message"]["content"]
 
 
-def _extract_via_gemini(source_text: str, anon) -> tuple["CandidateExtraction", Dict[str, Any]]:
-    """Extract structured data via Gemini."""
-    if not _configure_genai():
-        raise ValueError("No Gemini API key configured")
-    model = genai.GenerativeModel(
-        model_name=get_active_model(DEFAULT_EXTRACT_MODEL),
-        generation_config={"response_mime_type": "application/json"},
-        system_instruction=(
-            "You are an expert HR data extractor. Extract structured candidate information "
-            "from the provided text. The text has been anonymized — tokens like CANDIDATE_001 "
-            "represent real names. Return only valid JSON matching the schema exactly."
-        ),
-    )
-    prompt = (
+_EXTRACTION_SYSTEM_PROMPT = (
+    "You are an expert HR data extractor. Extract structured candidate information "
+    "from the provided text. The text has been anonymized — tokens like CANDIDATE_001 "
+    "represent real names. Return only valid JSON matching the schema exactly."
+)
+
+
+def _extraction_prompt(anonymized_text: str) -> str:
+    return (
         "Extract all candidate information from this anonymized CV/profile text.\n\n"
-        f"{anon.anonymized_text}\n\n"
+        f"{anonymized_text}\n\n"
         "Return a JSON object with these exact fields: name (string or null), "
         "emails (array), phones (array), linkedin_url (string or null), "
         "headline (string or null), summary (string or null), "
@@ -167,66 +162,39 @@ def _extract_via_gemini(source_text: str, anon) -> tuple["CandidateExtraction", 
         "location (string or null), projects_developed (array), "
         "extraction_confidence (0.0-1.0), sensitive_data_detected (boolean)."
     )
-    response = model.generate_content(prompt)
-    raw = response.text
-    data = json.loads(raw)
-    extraction = CandidateExtraction(**data)
-    return extraction, {"model": get_active_model(DEFAULT_EXTRACT_MODEL), "provider": "gemini"}
-
-
-def _extract_via_lm_studio(source_text: str, anon) -> tuple["CandidateExtraction", Dict[str, Any]]:
-    """Extract structured data via LM Studio local server."""
-    prompt = (
-        "Extract all candidate information from this anonymized CV/profile text.\n\n"
-        f"{anon.anonymized_text}\n\n"
-        "Return a JSON object with these exact fields: name, emails, phones, "
-        "linkedin_url, headline, summary, seniority, years_of_experience, "
-        "technologies_used, previous_jobs, study_degrees, languages_spoken, "
-        "location, projects_developed, extraction_confidence, sensitive_data_detected."
-    )
-    resp_text = _lm_studio_chat(
-        [
-            {"role": "system", "content": "You are an expert HR data extractor. Return only valid JSON."},
-            {"role": "user", "content": prompt},
-        ],
-        json_mode=True,
-    )
-    data = json.loads(resp_text)
-    extraction = CandidateExtraction(**data)
-    return extraction, {"model": LM_STUDIO_MODEL, "provider": "lm_studio"}
 
 
 def extract_candidate_data(text: str) -> tuple["CandidateExtraction", Dict[str, Any]]:
     """
     Extract structured candidate data from raw CV/profile text.
 
-    When ENABLE_EXTERNAL_LLM is True: anonymises PII, sends to Gemini, then
-    rehydrates the name token so the record stores the real name.
-    When False (or no key): falls back to heuristic extraction.
+    When ENABLE_EXTERNAL_LLM is True and the active provider is reachable:
+    anonymises PII, sends to the configured LLM, then rehydrates the name token
+    so the record stores the real name. Otherwise falls back to heuristic
+    extraction (always available, no key required).
     """
-    use_local = get_use_local_llm()
+    from . import llm
+    from .config import get_active_provider
 
-    if not ENABLE_EXTERNAL_LLM:
-        return extract_candidate_data_heuristic(text)
-
-    if not use_local and not (GEMINI_API_KEY or get_active_api_key()):
+    if not ENABLE_EXTERNAL_LLM or not llm.llm_available():
         return extract_candidate_data_heuristic(text)
 
     anon = anonymize_candidate_text(text)
+    messages = [
+        {"role": "system", "content": _EXTRACTION_SYSTEM_PROMPT},
+        {"role": "user", "content": _extraction_prompt(anon.anonymized_text)},
+    ]
 
     try:
-        if use_local:
-            if not _lm_studio_available():
-                return extract_candidate_data_heuristic(text)
-            extraction, model_info = _extract_via_lm_studio(text, anon)
-        else:
-            extraction, model_info = _extract_via_gemini(text, anon)
+        raw = llm.complete(messages, json_mode=True)
+        data = json.loads(raw)
+        extraction = CandidateExtraction(**data)
 
         # Rehydrate only the name token
         if extraction.name:
             extraction.name = rehydrate_text(extraction.name, anon.mapping, allowed={"CANDIDATE"})
 
-        return extraction, model_info
+        return extraction, {"model": llm.active_model(), "provider": get_active_provider()}
 
     except (json.JSONDecodeError, ValidationError) as e:
         _quarantine_failed_extraction(text, str(e))

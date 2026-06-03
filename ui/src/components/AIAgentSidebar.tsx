@@ -1,5 +1,5 @@
 import { FormEvent, useMemo, useState } from 'react';
-import { Bot, Loader2, Send, X } from 'lucide-react';
+import { Ban, Bot, CheckCircle2, Loader2, Send, ShieldCheck, X } from 'lucide-react';
 import * as api from '../api';
 import { Candidate, JobRequirement, ReviewTask } from '../types';
 
@@ -12,7 +12,13 @@ interface AIAgentSidebarProps {
   onActionCompleted: () => Promise<void>;
 }
 
-type Message = api.AssistantMessage;
+type Message = api.AssistantMessage & {
+  proposals?: api.AgentProposal[];
+  actions?: api.AgentAction[];
+  errors?: string[];
+};
+
+type ProposalStatus = 'idle' | 'loading' | 'confirmed' | 'cancelled' | 'error';
 
 export default function AIAgentSidebar({
   isOpen,
@@ -25,14 +31,17 @@ export default function AIAgentSidebar({
   const [messages, setMessages] = useState<Message[]>([
     {
       role: 'assistant',
-      content: 'I can help create job requirements, list active roles, and summarize pending review work using the current backend data.',
+      content: 'I can prepare local talent-pool workflow actions for human confirmation: jobs, shortlists, outreach drafts, review work, intake, and stale-profile maintenance.',
     },
   ]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [proposalStates, setProposalStates] = useState<Record<string, { status: ProposalStatus; error?: string }>>({});
 
   const prompts = useMemo(() => [
     'Create a Senior Python Engineer role in Remote with Python and FastAPI',
+    'Run shortlist for the newest active job',
+    'Find stale profiles older than 6 months',
     'Show me active jobs',
     'What review cases need attention?',
   ], []);
@@ -49,9 +58,19 @@ export default function AIAgentSidebar({
     setInput('');
     setLoading(true);
     try {
-      const result = await api.sendAssistantMessage(nextMessages, { candidates, jobs, reviewTasks });
-      setMessages([...nextMessages, { role: 'assistant', content: result.text }]);
-      if (result.actions.length > 0) {
+      const assistantMessages = nextMessages.map(({ role, content }) => ({ role, content }));
+      const result = await api.sendAssistantMessage(assistantMessages, { candidates, jobs, reviewTasks });
+      setMessages([
+        ...nextMessages,
+        {
+          role: 'assistant',
+          content: result.text,
+          proposals: result.proposals || [],
+          actions: result.actions || [],
+          errors: result.errors || [],
+        },
+      ]);
+      if ((result.actions || []).length > 0) {
         await onActionCompleted();
       }
     } catch (error) {
@@ -62,6 +81,41 @@ export default function AIAgentSidebar({
     } finally {
       setLoading(false);
     }
+  };
+
+  const confirmProposal = async (proposal: api.AgentProposal) => {
+    const current = proposalStates[proposal.id]?.status;
+    if (current === 'loading' || current === 'confirmed' || current === 'cancelled') return;
+
+    setProposalStates((prev) => ({ ...prev, [proposal.id]: { status: 'loading' } }));
+    try {
+      const result = await api.confirmAssistantProposal(proposal.id);
+      setProposalStates((prev) => ({ ...prev, [proposal.id]: { status: 'confirmed' } }));
+      setMessages((prev) => [
+        ...prev,
+        {
+          role: 'assistant',
+          content: result.text,
+          actions: result.actions || [],
+          errors: result.errors || [],
+        },
+      ]);
+      if ((result.actions || []).length > 0) {
+        await onActionCompleted();
+      }
+    } catch (error) {
+      setProposalStates((prev) => ({
+        ...prev,
+        [proposal.id]: {
+          status: 'error',
+          error: error instanceof Error ? error.message : 'Confirmation failed.',
+        },
+      }));
+    }
+  };
+
+  const cancelProposal = (proposalId: string) => {
+    setProposalStates((prev) => ({ ...prev, [proposalId]: { status: 'cancelled' } }));
   };
 
   return (
@@ -75,7 +129,7 @@ export default function AIAgentSidebar({
             </div>
             <div>
               <h2 className="text-base font-semibold text-slate-950">Workflow Assistant</h2>
-              <p className="text-sm text-slate-500">Uses configured LM Studio or external routing.</p>
+              <p className="text-sm text-slate-500">Local workflow proposals with human confirmation.</p>
             </div>
           </div>
           <button
@@ -90,13 +144,63 @@ export default function AIAgentSidebar({
 
         <div className="flex-1 space-y-4 overflow-y-auto p-5">
           {messages.map((message, index) => (
-            <div
-              key={`${message.role}-${index}`}
-              className={`rounded-md p-3 text-sm leading-6 ${
-                message.role === 'user' ? 'ml-8 bg-slate-900 text-white' : 'mr-8 bg-slate-100 text-slate-700'
-              }`}
-            >
-              {message.content}
+            <div key={`${message.role}-${index}`} className="space-y-3">
+              <div
+                className={`whitespace-pre-wrap rounded-md p-3 text-sm leading-6 ${
+                  message.role === 'user' ? 'ml-8 bg-slate-900 text-white' : 'mr-8 bg-slate-100 text-slate-700'
+                }`}
+              >
+                {message.content}
+              </div>
+              {message.proposals?.map((proposal) => {
+                const state = proposalStates[proposal.id] || { status: 'idle' as ProposalStatus };
+                return (
+                  <div key={proposal.id} className="mr-8 rounded-md border border-cyan-200 bg-white p-4 shadow-sm">
+                    <div className="flex items-start gap-3">
+                      <div className="rounded-md bg-cyan-50 p-2 text-cyan-700">
+                        <ShieldCheck className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-semibold text-slate-950">{proposal.label}</p>
+                        <p className="mt-1 text-sm leading-5 text-slate-600">{proposal.description}</p>
+                        <p className="mt-2 text-xs leading-5 text-slate-500">{proposal.impact}</p>
+                        {state.error && (
+                          <p className="mt-2 rounded-md bg-rose-50 px-2 py-1 text-xs text-rose-700">{state.error}</p>
+                        )}
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => confirmProposal(proposal)}
+                            disabled={state.status !== 'idle' && state.status !== 'error'}
+                            className="inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {state.status === 'loading' ? (
+                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <CheckCircle2 className="h-3.5 w-3.5" />
+                            )}
+                            {state.status === 'confirmed' ? 'Confirmed' : 'Confirm'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => cancelProposal(proposal.id)}
+                            disabled={state.status !== 'idle' && state.status !== 'error'}
+                            className="inline-flex items-center gap-2 rounded-md border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <Ban className="h-3.5 w-3.5" />
+                            {state.status === 'cancelled' ? 'Cancelled' : 'Cancel'}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {message.errors?.map((error) => (
+                <div key={error} className="mr-8 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                  {error}
+                </div>
+              ))}
             </div>
           ))}
           {loading && (

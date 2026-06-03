@@ -474,7 +474,7 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("Hi Ada Lovelace", captured_cases[0]["draft_text"])
         self.assertNotIn("CANDIDATE_001", captured_cases[0]["draft_text"])
 
-    def test_agent_chat_prompt_uses_pii_minimized_candidate_context(self):
+    def test_agent_chat_does_not_call_hosted_llm_for_candidate_context(self):
         import web.app as web_app
         from core import llm
 
@@ -483,7 +483,6 @@ class RegressionTests(unittest.TestCase):
         record.identity.phones = ["+40 722 111 222"]
         record.identity.linkedin_url = "https://linkedin.com/in/ada"
         record.profile.summary = "Ada Lovelace built private ML systems."
-        capture = CaptureLLM("Candidate cand_test has Python experience.")
 
         body = web_app._GeminiChatBody(
             messages=[web_app._ChatMessage(role="user", content="Which candidates know Python?")],
@@ -492,17 +491,67 @@ class RegressionTests(unittest.TestCase):
 
         with patch.object(web_app, "_candidate_record_ids", return_value=["cand_test"]), \
             patch.object(web_app, "load_record", return_value=record), \
-            patch.object(llm, "llm_available", return_value=True), \
-            patch.object(llm, "complete", capture):
-            asyncio.run(web_app.gemini_chat(body))
+            patch.object(llm, "llm_available", return_value=True) as llm_available, \
+            patch.object(llm, "complete") as complete:
+            response = asyncio.run(web_app.gemini_chat(body))
 
-        prompt = capture.last_prompt
-        self.assertIn("cand_test", prompt)
-        self.assertIn("CANDIDATE_001", prompt)
-        self.assertNotIn("Ada Lovelace", prompt)
-        self.assertNotIn("ada@example.com", prompt)
-        self.assertNotIn("+40 722 111 222", prompt)
-        self.assertNotIn("linkedin.com/in/ada", prompt)
+        llm_available.assert_not_called()
+        complete.assert_not_called()
+        self.assertIn("Ada Lovelace", response["text"])
+        self.assertNotIn("ada@example.com", response["text"])
+        self.assertNotIn("+40 722 111 222", response["text"])
+        self.assertNotIn("linkedin.com/in/ada", response["text"])
+
+    def test_agent_create_job_requires_confirmation_before_mutation(self):
+        import web.app as web_app
+
+        body = web_app._GeminiChatBody(
+            messages=[
+                web_app._ChatMessage(
+                    role="user",
+                    content="Create a Senior Python Engineer role in Remote with Python and FastAPI",
+                )
+            ],
+            context={"candidates": [], "jobs": [], "reviewTasks": []},
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            requirements = base / "requirements"
+            proposals = base / "agent_proposals"
+            requirements.mkdir()
+            web_app._AGENT_PROPOSALS.clear()
+            with patch.object(web_app, "REQUIREMENTS_DIR", requirements), \
+                patch.object(web_app, "AGENT_PROPOSALS_DIR", proposals), \
+                patch.object(web_app, "log_event"):
+                response = asyncio.run(web_app.gemini_chat(body))
+                self.assertEqual(response["actions"], [])
+                self.assertEqual(len(response["proposals"]), 1)
+                self.assertEqual(list(requirements.glob("*.json")), [])
+
+                proposal_id = response["proposals"][0]["id"]
+                proposal_file = proposals / f"{proposal_id}.json"
+                self.assertTrue(proposal_file.exists())
+
+                # Simulate a backend restart: disk-backed proposals should still confirm.
+                web_app._AGENT_PROPOSALS.clear()
+                confirmed = asyncio.run(web_app.confirm_agent_action(proposal_id))
+                self.assertFalse(proposal_file.exists())
+
+            self.assertEqual(confirmed["actions"][0]["type"], "job_created")
+            created_files = list(requirements.glob("req_*.json"))
+            self.assertEqual(len(created_files), 1)
+            created = json.loads(created_files[0].read_text(encoding="utf-8"))
+            self.assertEqual(created["title"], "Senior Python Engineer")
+            web_app._AGENT_PROPOSALS.clear()
+
+    def test_agent_confirm_rejects_traversal_proposal_id(self):
+        import web.app as web_app
+
+        with self.assertRaises(web_app.HTTPException) as ctx:
+            asyncio.run(web_app.confirm_agent_action("../secret"))
+
+        self.assertEqual(ctx.exception.status_code, 400)
 
     def test_legacy_candidates_page_route_is_removed(self):
         import web.app as web_app

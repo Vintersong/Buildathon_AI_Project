@@ -20,6 +20,7 @@ sys.path.insert(0, str(project_root))
 from core.store import load_record, save_record
 from core.match import generate_shortlist
 from core.config import (
+    DATA_DIR,
     RECORDS_DIR,
     REQUIREMENTS_DIR,
     RECORD_INDEX_PATH,
@@ -1124,22 +1125,341 @@ class _GeminiChatBody(BaseModel):
     messages: List[_ChatMessage]
     context: dict = {}
 
+class AgentActionResult(BaseModel):
+    type: str
+    data: Any = None
+
+class AgentProposal(BaseModel):
+    id: str
+    type: str
+    label: str
+    description: str
+    params: dict
+    impact: str
+    requiresConfirmation: bool = True
+    createdAt: str
+
+class AgentChatResponse(BaseModel):
+    text: str
+    actions: List[AgentActionResult] = Field(default_factory=list)
+    proposals: List[AgentProposal] = Field(default_factory=list)
+    errors: List[str] = Field(default_factory=list)
+
+class AgentCreateJobParams(JobCreate):
+    pass
+
+class AgentShortlistParams(BaseModel):
+    req_id: str
+    top_n: int = Field(default=5, ge=1, le=25)
+
+class AgentOutreachDraftParams(BaseModel):
+    candidate_id: str
+    job_id: str
+    candidate_name: str = ""
+    job_title: str = ""
+
+class AgentResolveReviewParams(BaseModel):
+    case_id: str
+    resolution: str = "approved"
+
+class AgentBulkRefreshParams(BaseModel):
+    ids: List[str] = Field(default_factory=list)
+
+class AgentProcessIntakeParams(BaseModel):
+    limit: int = Field(default=25, ge=1, le=500)
+
+AGENT_PROPOSALS_DIR = DATA_DIR / "agent_proposals"
+_AGENT_PROPOSALS: dict[str, dict] = {}
+
+
+def _dump_model(model: BaseModel) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
+
+
+def _agent_proposal_path(proposal_id: str) -> Path:
+    return resolve_json_path(AGENT_PROPOSALS_DIR, proposal_id, kind="agent proposal")
+
+
+def _save_agent_proposal(proposal: dict) -> None:
+    AGENT_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _agent_proposal_path(proposal.get("id", ""))
+    tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(proposal, f, indent=2)
+    tmp.replace(path)
+
+
+def _consume_agent_proposal(proposal_id: str) -> Optional[dict]:
+    try:
+        path = _agent_proposal_path(proposal_id)
+    except ValueError:
+        raise
+
+    proposal = _AGENT_PROPOSALS.pop(proposal_id, None)
+    if proposal is None and path.exists():
+        with open(path, "r", encoding="utf-8") as f:
+            proposal = json.load(f)
+
+    if proposal is not None:
+        path.unlink(missing_ok=True)
+    return proposal
+
+
+def _agent_event(event_type: str, *, proposal: dict, actor: str = "system", result: Any = None, error: str = "") -> None:
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": event_type,
+        "timestamp": utc_now_iso(),
+        "actor": {"type": actor},
+        "source": {
+            "source_type": "agent",
+            "proposal_id": proposal.get("id", ""),
+            "action_type": proposal.get("type", ""),
+        },
+        "changes": [{"operation": event_type, "path": "/agent/proposals", "value": proposal.get("type", "")}],
+        "agent": {
+            "proposal_id": proposal.get("id", ""),
+            "action_type": proposal.get("type", ""),
+            "params": proposal.get("params", {}),
+            "result": result,
+            "error": error,
+        },
+        "confidence": 1.0,
+    }
+    try:
+        log_event(event)
+    except OSError as exc:
+        print(f"[agent] audit log unavailable: {exc}")
+
+
+def _agent_proposal(action_type: str, label: str, description: str, params: BaseModel, impact: str) -> AgentProposal:
+    proposal = AgentProposal(
+        id=f"agent_{uuid.uuid4().hex[:12]}",
+        type=action_type,
+        label=label,
+        description=description,
+        params=_dump_model(params),
+        impact=impact,
+        createdAt=utc_now_iso(),
+    )
+    stored = _dump_model(proposal)
+    _AGENT_PROPOSALS[proposal.id] = stored
+    _save_agent_proposal(stored)
+    _agent_event("agent_action_proposed", proposal=stored)
+    return proposal
+
+
+def _job_label(job: dict) -> str:
+    return f"{job.get('title', 'Untitled job')} ({job.get('location') or 'No location'})"
+
+
+def _find_job_from_text(text: str, jobs: list) -> Optional[dict]:
+    id_m = re.search(r"\breq_[A-Za-z0-9_-]+\b", text)
+    if id_m:
+        return next((j for j in jobs if j.get("id") == id_m.group(0)), None)
+
+    lower = text.lower()
+    exact = [j for j in jobs if j.get("title", "").lower() and j.get("title", "").lower() in lower]
+    if exact:
+        return sorted(exact, key=lambda j: len(j.get("title", "")), reverse=True)[0]
+
+    tokens = {tok for tok in re.findall(r"[a-z0-9+#.]+", lower) if len(tok) > 2}
+    scored = []
+    for job in jobs:
+        haystack = " ".join([
+            job.get("title", ""),
+            job.get("department", ""),
+            job.get("location", ""),
+            " ".join(job.get("tags", [])),
+        ]).lower()
+        score = sum(1 for tok in tokens if tok in haystack)
+        if score:
+            scored.append((score, job))
+    if scored:
+        scored.sort(key=lambda row: row[0], reverse=True)
+        return scored[0][1]
+    return jobs[0] if len(jobs) == 1 else None
+
+
+def _find_candidate_from_text(text: str, candidates: list, jobs: list, job: Optional[dict] = None) -> Optional[dict]:
+    id_m = re.search(r"\bcand_[A-Za-z0-9_-]+\b", text)
+    if id_m:
+        return next((c for c in candidates if c.get("id") == id_m.group(0)), None)
+
+    lower = text.lower()
+    exact = [c for c in candidates if c.get("name", "").lower() and c.get("name", "").lower() in lower]
+    if exact:
+        return sorted(exact, key=lambda c: len(c.get("name", "")), reverse=True)[0]
+
+    if job:
+        shortlist = job.get("shortlist") or []
+        if shortlist:
+            top = shortlist[0]
+            return {"id": top.get("id"), "name": top.get("name") or top.get("id", "")}
+
+    for existing_job in jobs:
+        shortlist = existing_job.get("shortlist") or []
+        if shortlist:
+            top = shortlist[0]
+            return {"id": top.get("id"), "name": top.get("name") or top.get("id", "")}
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _find_review_task_from_text(text: str, review_tasks: list) -> Optional[dict]:
+    id_m = re.search(r"\breview_[A-Za-z0-9_-]+\b", text)
+    if id_m:
+        return next((t for t in review_tasks if t.get("id") == id_m.group(0)), None)
+
+    pending = [t for t in review_tasks if t.get("status") == "pending"]
+    lower = text.lower()
+    for task in pending:
+        if task.get("title", "").lower() and task.get("title", "").lower() in lower:
+            return task
+        details = task.get("complianceDetails") or task.get("outreachDetails") or {}
+        for value in details.values():
+            if isinstance(value, str) and value.lower() and value.lower() in lower:
+                return task
+    return pending[0] if len(pending) == 1 else None
+
+
+def _resolution_from_text(text: str) -> str:
+    lower = text.lower()
+    if any(word in lower for word in ("purge", "delete", "remove", "gdpr erase", "erase")):
+        return "purged"
+    if any(word in lower for word in ("reject", "decline", "deny")):
+        return "rejected"
+    return "approved"
+
+
+def _candidate_ids_from_text(text: str, candidates: list) -> list[str]:
+    ids = list(dict.fromkeys(re.findall(r"\bcand_[A-Za-z0-9_-]+\b", text)))
+    lower = text.lower()
+    for candidate in candidates:
+        name = candidate.get("name", "")
+        if name and name.lower() in lower:
+            ids.append(candidate.get("id", ""))
+    return [cid for cid in dict.fromkeys(ids) if cid]
+
+
+async def _execute_agent_proposal(proposal: dict) -> AgentActionResult:
+    action_type = proposal.get("type", "")
+    params = proposal.get("params", {})
+
+    async def with_heuristic_extraction(operation):
+        from core import extract
+
+        previous = extract.ENABLE_EXTERNAL_LLM
+        extract.ENABLE_EXTERNAL_LLM = False
+        try:
+            return await operation()
+        finally:
+            extract.ENABLE_EXTERNAL_LLM = previous
+
+    if action_type == "CREATE_JOB":
+        body = AgentCreateJobParams(**params)
+        data = await create_job(JobCreate(**_dump_model(body)))
+        return AgentActionResult(type="job_created", data=data)
+
+    if action_type == "RUN_SHORTLIST":
+        body = AgentShortlistParams(**params)
+        result = generate_shortlist(body.req_id, top_n=body.top_n, use_llm_rerank=False)
+        data = []
+        for item in result.get("results", []):
+            rec_id = item.get("record_id", "")
+            name = item.get("name") or rec_id
+            confidence = item.get("combined_score", item.get("llm_score", 0.0))
+            data.append({
+                "id": rec_id,
+                "name": name,
+                "confidence": confidence,
+                "explanation": "; ".join(item.get("evidence", [])),
+                "status": "active",
+                "initials": _initials(name),
+            })
+        return AgentActionResult(type="shortlist_generated", data={"req_id": body.req_id, "shortlist": data})
+
+    if action_type == "CREATE_OUTREACH_DRAFT":
+        body = AgentOutreachDraftParams(**params)
+        from core import outreach
+
+        previous = outreach.ENABLE_EXTERNAL_OUTREACH_LLM
+        outreach.ENABLE_EXTERNAL_OUTREACH_LLM = False
+        try:
+            data = await create_outreach_draft(OutreachDraftBody(
+                candidateId=body.candidate_id,
+                jobId=body.job_id,
+                candidateName=body.candidate_name,
+                jobTitle=body.job_title,
+            ))
+        finally:
+            outreach.ENABLE_EXTERNAL_OUTREACH_LLM = previous
+        return AgentActionResult(type="outreach_draft_created", data=data)
+
+    if action_type == "RESOLVE_REVIEW":
+        body = AgentResolveReviewParams(**params)
+        data = await resolve_review_task(body.case_id, ResolveBody(resolution=body.resolution, reviewer="human_operator"))
+        return AgentActionResult(type="review_resolved", data={"case_id": body.case_id, "resolution": body.resolution, **data})
+
+    if action_type == "BULK_REFRESH_CANDIDATES":
+        body = AgentBulkRefreshParams(**params)
+        data = await with_heuristic_extraction(
+            lambda: maintenance_bulk_refresh_candidates(BulkRefreshBody(ids=body.ids))
+        )
+        return AgentActionResult(type="candidates_refreshed", data=data)
+
+    if action_type == "PROCESS_INTAKE":
+        body = AgentProcessIntakeParams(**params)
+        data = await with_heuristic_extraction(lambda: process_intake(body.limit))
+        return AgentActionResult(type="intake_processed", data=data)
+
+    raise ValueError(f"Unsupported agent action: {action_type}")
+
+
+def _agent_help_text(candidates: list, jobs: list, pending_count: int) -> str:
+    return (
+        "I can prepare Linnify talent-pool workflow actions for human confirmation:\n\n"
+        "- Create a job requirement\n"
+        "- Run a shortlist for an existing job\n"
+        "- Prepare an outreach draft for review\n"
+        "- Resolve review items\n"
+        "- Find stale profiles or refresh selected candidates\n"
+        "- Process provided intake files\n\n"
+        f"Current system: **{len(candidates)} candidates**, **{len(jobs)} jobs**, **{pending_count} pending reviews**."
+    )
+
 
 def _extract_job_params(text: str) -> dict:
     params: dict = {"title": "", "department": "Engineering", "location": "Remote", "must_have": [], "nice_to_have": []}
+    direct_role_m = re.search(
+        r"(?:create|add|open|new|post)\s+(?:a|an)?\s*(.+?)(?:\s+(?:role|position|job)\b|\s+in\b|\s+with\b|,|\.|$)",
+        text,
+        re.IGNORECASE,
+    )
+    if direct_role_m:
+        params["title"] = direct_role_m.group(1).strip().title()
+
     title_m = re.search(
         r"(?:for (?:a|an) )([\w\s]+?)(?:\s+(?:role|position|job|engineer|developer|manager|analyst|designer|at|in|with|,|$))",
         text, re.IGNORECASE
     )
-    if title_m:
+    if title_m and not params["title"]:
         params["title"] = title_m.group(1).strip().title()
-    else:
+    elif not params["title"]:
         role_m = re.search(
             r"([\w\s]+?)\s+(?:role|position|engineer|developer|manager|analyst|designer)\b",
             text, re.IGNORECASE
         )
         if role_m:
             params["title"] = role_m.group(0).strip().title()
+    params["title"] = re.sub(
+        r"^(create|add|open|new|post)\s+(a|an)?\s*",
+        "",
+        params["title"],
+        flags=re.IGNORECASE,
+    ).strip()
+    params["title"] = re.sub(r"\s+(role|position|job)$", "", params["title"], flags=re.IGNORECASE).strip()
 
     loc_m = re.search(r"(?:in|at|based in|located in)\s+([\w\s,]+?)(?:\s+with|\s+who|\s+and|,|\.|$)", text, re.IGNORECASE)
     if loc_m:
@@ -1177,7 +1497,7 @@ def _format_jobs_list(jobs: list, query: str = "") -> str:
 
 
 @app.post("/api/gemini/chat")
-async def gemini_chat(body: _GeminiChatBody):
+async def gemini_chat(body: _GeminiChatBody) -> dict:
     messages = [{"role": m.role, "content": m.content} for m in body.messages]
     context = body.context
     last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
@@ -1187,134 +1507,239 @@ async def gemini_chat(body: _GeminiChatBody):
     jobs: list = context.get("jobs", [])
     review_tasks: list = context.get("reviewTasks", [])
     pending_count = sum(1 for t in review_tasks if t.get("status") == "pending")
-    actions_taken: list[dict] = []
+    actions_taken: list[AgentActionResult] = []
+    proposals: list[AgentProposal] = []
+    errors: list[str] = []
+    candidate_profiles: list[dict] = []
+    for record_id in _candidate_record_ids():
+        rec = load_record(record_id)
+        if rec and not rec.state.archived:
+            candidate_profiles.append({
+                "id": record_id,
+                "name": rec.identity.primary_name or "Unknown",
+                "seniority": rec.profile.seniority or "Unknown",
+                "location": rec.profile.location or "",
+                "skills": rec.profile.technologies_used or [],
+                "summary": rec.profile.summary or rec.profile.headline or "",
+            })
 
     create_intent = any(p in lower_msg for p in [
         "create job", "add job", "new job", "post job",
         "create a job", "add a job", "create a new job", "create a role", "add a role",
-    ])
+        "open a role", "new role",
+    ]) or (
+        re.search(r"\b(create|add|open|post|new)\b", lower_msg)
+        and re.search(r"\b(role|position|job|engineer|developer|manager|analyst|designer)\b", lower_msg)
+    )
     search_intent = any(p in lower_msg for p in [
         "find job", "search job", "list job", "show job",
         "what jobs", "which jobs", "show me job", "find a job",
     ])
+    shortlist_intent = "shortlist" in lower_msg or "rank candidate" in lower_msg or "match candidates" in lower_msg
+    outreach_intent = "outreach" in lower_msg or "email draft" in lower_msg or "draft email" in lower_msg
+    resolve_intent = any(p in lower_msg for p in ["resolve review", "approve review", "reject review", "purge review", "approve case", "reject case", "purge case"])
+    refresh_intent = "refresh" in lower_msg or "bulk update" in lower_msg or "bulk refresh" in lower_msg
+    intake_intent = "process intake" in lower_msg or "ingest intake" in lower_msg or "import intake" in lower_msg
+    stale_intent = "stale" in lower_msg or "outdated" in lower_msg or "not updated" in lower_msg
 
     response_text = ""
 
-    from core import llm
-    llm_ok = llm.llm_available()
-
-    full_records: list[dict] = []
-    for record_id in _candidate_record_ids():
-        rec = load_record(record_id)
-        if rec and not rec.state.archived:
-            full_records.append(_map_candidate_agent_context(record_id, rec))
-
-    if llm_ok:
-        records_block = json.dumps(full_records, default=str, ensure_ascii=False)
-        system_prompt = (
-            f"You are the Linnify AI Talent Pool Manager assistant.\n\n"
-            f"System status: {len(full_records)} candidates, {len(jobs)} jobs, {pending_count} pending compliance reviews.\n"
-            f"Active jobs: {', '.join(j.get('title','') for j in jobs[:6]) or 'none'}.\n\n"
-            f"PII-minimized candidate records (from records/ folder) \u2014 use these to answer questions about\n"
-            f"skills, experience, education, location, previous jobs, projects, languages,\n"
-            f"compliance, and scores. Do not infer or reveal contact details:\n"
-            f"{records_block}\n\n"
-            f"Capabilities:\n"
-            f"1. CREATE JOBS \u2014 if user wants to create/add a job, include this marker on its own line before your explanation:\n"
-            f'   [ACTION:CREATE_JOB] {{"title":"...","department":"...","location":"...","must_have":["..."],"nice_to_have":["..."]}}\n'
-            f"2. SEARCH JOBS \u2014 list matching jobs from the active list above.\n"
-            f"3. GENERAL \u2014 answer questions about candidates, compliance, GDPR, outreach using the sanitized records above.\n\n"
-            f"Be concise and professional."
-        )
-
-        try:
-            chat_messages = [{"role": "system", "content": system_prompt}]
-            for msg in messages:
-                chat_messages.append({"role": msg["role"], "content": msg["content"]})
-            response_text = llm.complete(chat_messages, json_mode=False)
-
-            action_m = re.search(r'\[ACTION:CREATE_JOB\]\s*(\{[^\n]+\})', response_text)
-            if action_m:
-                try:
-                    jp = json.loads(action_m.group(1))
-                    job_body = JobCreate(
-                        title=jp.get("title", "New Role"),
-                        department=jp.get("department", "Engineering"),
-                        location=jp.get("location", "Remote"),
-                        must_have=jp.get("must_have", []),
-                        nice_to_have=jp.get("nice_to_have", []),
-                    )
-                    created = await create_job(job_body)
-                    actions_taken.append({"type": "job_created", "data": created})
-                    response_text = re.sub(r'\[ACTION:CREATE_JOB\]\s*\{[^\n]+\}\n?', '', response_text).strip()
-                except Exception:
-                    pass
-
-        except Exception as exc:
-            err = str(exc)
-            if any(k in err.lower() for k in ("429", "quota", "rate", "exhausted")):
-                llm_ok = False
-                response_text = ""
-            else:
-                response_text = f"Agent error: {exc}"
-
-    if not response_text:
-        if create_intent:
-            params = _extract_job_params(last_user_msg)
-            if params["title"]:
-                job_body = JobCreate(
-                    title=params["title"],
-                    department=params["department"],
-                    location=params["location"],
-                    must_have=params["must_have"],
-                    nice_to_have=params["nice_to_have"],
-                )
-                created = await create_job(job_body)
-                actions_taken.append({"type": "job_created", "data": created})
-                skills_str = ", ".join(params["must_have"]) if params["must_have"] else "to be defined"
-                response_text = (
-                    f"Job **{params['title']}** has been created and is ready for shortlisting.\n\n"
-                    f"- **Location**: {params['location']}\n"
-                    f"- **Department**: {params['department']}\n"
-                    f"- **Required skills**: {skills_str}\n\n"
-                    "Run shortlist from Jobs & Shortlist to rank candidates."
-                )
-            else:
-                response_text = (
-                    "I'd be happy to create a job! Please include the role details, for example:\n\n"
-                    "_\"Create a job for a Senior Python Developer in London with FastAPI and Docker\"_\n\n"
-                    "Or use the **Create job** button in Jobs & Shortlist."
-                )
-        elif search_intent:
-            response_text = _format_jobs_list(jobs, last_user_msg)
-        elif any(p in lower_msg for p in ["candidate", "talent", "pool", "how many"]):
-            response_text = (
-                f"**Talent Pool Overview**\n\n"
-                f"- Total candidates: **{len(candidates)}**\n"
-                f"- Active jobs: **{len(jobs)}**\n"
-                f"- Pending compliance reviews: **{pending_count}**\n\n"
-                "Use the Talent Pool screen for detailed filtering."
+    if create_intent:
+        params = _extract_job_params(last_user_msg)
+        if params["title"]:
+            job_body = AgentCreateJobParams(
+                title=params["title"],
+                department=params["department"],
+                location=params["location"],
+                must_have=params["must_have"],
+                nice_to_have=params["nice_to_have"],
             )
-        elif any(p in lower_msg for p in ["compliance", "gdpr", "pending", "review"]):
-            pending_tasks = [t for t in review_tasks if t.get("status") == "pending"]
-            if pending_tasks:
-                lines = [f"**{len(pending_tasks)} pending compliance task(s):**\n"]
-                for t in pending_tasks[:5]:
-                    lines.append(f"- `{t.get('id','')[:8]}` - {t.get('type','UNKNOWN').replace('_',' ')}")
-                response_text = "\n".join(lines)
-            else:
-                response_text = "No pending compliance tasks. The candidate pool is fully compliant."
+            skills_str = ", ".join(params["must_have"]) if params["must_have"] else "to be defined"
+            proposals.append(_agent_proposal(
+                "CREATE_JOB",
+                f"Create job: {params['title']}",
+                f"Create a {params['department']} job requirement in {params['location']} with required skills: {skills_str}.",
+                job_body,
+                "Adds one job requirement. No candidates are shortlisted until you run matching.",
+            ))
+            response_text = "I prepared a job requirement proposal. Confirm it to add the job to Jobs & Shortlist."
         else:
             response_text = (
-                f"I'm the **Linnify Talent Pool assistant**. Here's what I can do:\n\n"
-                f"- **Create jobs**: _\"Create a job for a Senior React Developer in Berlin\"_\n"
-                f"- **Search jobs**: _\"Find all engineering roles\"_ or _\"Show remote jobs\"_\n"
-                f"- **Pool overview**: _\"How many candidates do we have?\"_\n"
-                f"- **Compliance**: _\"What GDPR tasks are pending?\"_\n\n"
-                f"Current system: **{len(candidates)} candidates**, **{len(jobs)} jobs**, **{pending_count} pending reviews**."
+                "Please include the role title before I prepare the job proposal, for example:\n\n"
+                "_Create a Senior Python Developer role in London with FastAPI and Docker._"
             )
+    elif shortlist_intent:
+        job = _find_job_from_text(last_user_msg, jobs)
+        if job:
+            body = AgentShortlistParams(req_id=job.get("id", ""), top_n=5)
+            proposals.append(_agent_proposal(
+                "RUN_SHORTLIST",
+                f"Run shortlist: {job.get('title', 'job')}",
+                f"Rank active talent-pool candidates for {_job_label(job)}.",
+                body,
+                "Updates the selected job with a ranked shortlist and evidence rows.",
+            ))
+            response_text = "I prepared a shortlist run. Confirm it to score and rank candidates for this job."
+        else:
+            response_text = "I need a specific job before preparing a shortlist run. Try naming the job title or use its `req_...` id."
+    elif outreach_intent:
+        job = _find_job_from_text(last_user_msg, jobs)
+        candidate = _find_candidate_from_text(last_user_msg, candidates, jobs, job)
+        if job and candidate:
+            body = AgentOutreachDraftParams(
+                candidate_id=candidate.get("id", ""),
+                job_id=job.get("id", ""),
+                candidate_name=candidate.get("name", ""),
+                job_title=job.get("title", ""),
+            )
+            proposals.append(_agent_proposal(
+                "CREATE_OUTREACH_DRAFT",
+                f"Draft outreach: {candidate.get('name', 'candidate')}",
+                f"Prepare a human-reviewed outreach draft for {candidate.get('name', 'the selected candidate')} about {job.get('title', 'the selected job')}.",
+                body,
+                "Creates an outreach draft in Outreach & Review. It does not send email or contact the candidate.",
+            ))
+            response_text = "I prepared an outreach-draft proposal. Confirm it to add the draft to the review queue."
+        else:
+            response_text = "I need both a candidate and a job before drafting outreach. Name the candidate/job or use their ids."
+    elif resolve_intent:
+        task = _find_review_task_from_text(last_user_msg, review_tasks)
+        if task:
+            resolution = _resolution_from_text(last_user_msg)
+            body = AgentResolveReviewParams(case_id=task.get("id", ""), resolution=resolution)
+            proposals.append(_agent_proposal(
+                "RESOLVE_REVIEW",
+                f"Resolve review: {task.get('id', '')[:12]}",
+                f"Mark review case `{task.get('id', '')}` as {resolution}.",
+                body,
+                "Changes the review queue. Purge resolutions may archive the candidate record.",
+            ))
+            response_text = "I prepared a review-resolution proposal. Confirm it only after checking the review item."
+        else:
+            response_text = "I need the review case id or a unique pending review item before preparing a resolution."
+    elif intake_intent:
+        limit_m = re.search(r"\b(\d{1,3})\b", last_user_msg)
+        limit = int(limit_m.group(1)) if limit_m else 25
+        body = AgentProcessIntakeParams(limit=limit)
+        proposals.append(_agent_proposal(
+            "PROCESS_INTAKE",
+            f"Process intake files ({body.limit})",
+            f"Import up to {body.limit} provided `.pdf` or `.txt` files from the intake folder.",
+            body,
+            "Creates or updates candidate records from files already placed in the local intake folder.",
+        ))
+        response_text = "I prepared an intake-processing proposal. Confirm it to import local intake files."
+    elif refresh_intent:
+        ids = _candidate_ids_from_text(last_user_msg, candidates)
+        if stale_intent and not ids:
+            months_m = re.search(r"(\d{1,2})\s*month", lower_msg)
+            months = int(months_m.group(1)) if months_m else 6
+            stale_result = await list_stale_candidates(months)
+            ids = [c.get("id", "") for c in stale_result.get("candidates", []) if c.get("id")]
+        if ids:
+            body = AgentBulkRefreshParams(ids=ids)
+            proposals.append(_agent_proposal(
+                "BULK_REFRESH_CANDIDATES",
+                f"Refresh {len(ids)} candidate profile{'s' if len(ids) != 1 else ''}",
+                "Update selected candidate records from already stored/profile-provided data.",
+                body,
+                "Updates candidate records locally and may add review cases for low-confidence changes. No external LinkedIn scraping is performed.",
+            ))
+            response_text = "I prepared a candidate-refresh proposal. Confirm it to update the selected records locally."
+        else:
+            response_text = "I need candidate ids, candidate names, or a stale-profile request before preparing a refresh."
+    elif stale_intent:
+        months_m = re.search(r"(\d{1,2})\s*month", lower_msg)
+        months = int(months_m.group(1)) if months_m else 6
+        result = await list_stale_candidates(months)
+        stale = result.get("candidates", [])
+        actions_taken.append(AgentActionResult(type="stale_candidates_listed", data=result))
+        if stale:
+            lines = [f"Found **{len(stale)} stale candidate(s)** older than {result.get('months', months)} months:\n"]
+            for candidate in stale[:8]:
+                lines.append(f"- **{candidate.get('name')}** `{candidate.get('id')}`")
+            response_text = "\n".join(lines)
+        else:
+            response_text = f"No stale candidates found for the {result.get('months', months)} month threshold."
+    elif search_intent:
+        response_text = _format_jobs_list(jobs, last_user_msg)
+    elif any(p in lower_msg for p in ["which candidates", "who knows", "know ", "skills", "experience with", "worked with"]):
+        stopwords = {
+            "which", "candidates", "candidate", "who", "knows", "know", "skills", "skill",
+            "experience", "with", "worked", "show", "have", "has", "the", "and", "for",
+        }
+        terms = [tok for tok in re.findall(r"[a-z0-9+#.]+", lower_msg) if len(tok) > 2 and tok not in stopwords]
+        matches = []
+        for profile in candidate_profiles:
+            haystack = " ".join([
+                profile.get("seniority", ""),
+                profile.get("location", ""),
+                " ".join(profile.get("skills", [])),
+                profile.get("summary", ""),
+            ]).lower()
+            score = sum(1 for term in terms if term in haystack)
+            if score:
+                matches.append((score, profile))
+        matches.sort(key=lambda row: row[0], reverse=True)
+        if matches:
+            lines = [f"Found **{len(matches)} candidate(s)** matching {', '.join(terms) or 'your query'}:\n"]
+            for _, profile in matches[:8]:
+                skills = ", ".join(profile.get("skills", [])[:5]) or "No skills listed"
+                lines.append(f"- **{profile.get('name')}** `{profile.get('id')}` - {profile.get('seniority')} / {skills}")
+            response_text = "\n".join(lines)
+        else:
+            response_text = "I did not find a local candidate match for that skill query."
+    elif any(p in lower_msg for p in ["candidate", "talent", "pool", "how many"]):
+        response_text = (
+            f"**Talent Pool Overview**\n\n"
+            f"- Total candidates: **{len(candidates)}**\n"
+            f"- Active jobs: **{len(jobs)}**\n"
+            f"- Pending compliance reviews: **{pending_count}**\n\n"
+            "Use the Talent Pool screen for detailed filtering."
+        )
+    elif any(p in lower_msg for p in ["compliance", "gdpr", "pending", "review"]):
+        pending_tasks = [t for t in review_tasks if t.get("status") == "pending"]
+        if pending_tasks:
+            lines = [f"**{len(pending_tasks)} pending review task(s):**\n"]
+            for t in pending_tasks[:5]:
+                lines.append(f"- `{t.get('id','')}` - {t.get('type','UNKNOWN').replace('_',' ')}")
+            response_text = "\n".join(lines)
+        else:
+            response_text = "No pending review tasks. The candidate pool is clear right now."
+    else:
+        response_text = _agent_help_text(candidates, jobs, pending_count)
 
-    return {"text": response_text, "actions": actions_taken}
+    response = AgentChatResponse(text=response_text, actions=actions_taken, proposals=proposals, errors=errors)
+    return _dump_model(response)
+
+
+@app.post("/api/agent/actions/{proposal_id}/confirm")
+async def confirm_agent_action(proposal_id: str):
+    try:
+        proposal = _consume_agent_proposal(proposal_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not proposal:
+        raise HTTPException(status_code=404, detail=f"Agent proposal '{proposal_id}' not found or already handled")
+
+    try:
+        result = await _execute_agent_proposal(proposal)
+    except HTTPException as exc:
+        _agent_event("agent_action_failed", proposal=proposal, actor="human", error=str(exc.detail))
+        raise
+    except Exception as exc:
+        _agent_event("agent_action_failed", proposal=proposal, actor="human", error=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    data = _dump_model(result) if isinstance(result, BaseModel) else result
+    _agent_event("agent_action_confirmed", proposal=proposal, actor="human", result=data)
+    response = AgentChatResponse(
+        text=f"Confirmed: {proposal.get('label', proposal.get('type', 'agent action'))}.",
+        actions=[result],
+        proposals=[],
+        errors=[],
+    )
+    return _dump_model(response)
 
 
 # ---------------------------------------------------------------------------

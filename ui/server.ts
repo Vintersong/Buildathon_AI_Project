@@ -3,6 +3,8 @@ import path from "path";
 import { config as loadDotenv } from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
 
 const __dirname = process.cwd();
 
@@ -107,7 +109,24 @@ app.use(
 async function start() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      cacheDir: process.env.VITE_CACHE_DIR || path.join(__dirname, ".vite"),
+      configFile: false,
+      root: __dirname,
+      plugins: [react(), tailwindcss()],
+      resolve: {
+        alias: {
+          "@": __dirname,
+        },
+      },
+      optimizeDeps: {
+        include: [],
+        noDiscovery: true,
+      },
+      server: {
+        hmr: process.env.DISABLE_HMR !== "true",
+        middlewareMode: true,
+        watch: process.env.DISABLE_HMR === "true" ? null : {},
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);

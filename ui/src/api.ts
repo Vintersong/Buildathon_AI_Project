@@ -206,14 +206,41 @@ export interface AssistantMessage {
   content: string;
 }
 
+export interface AgentProposal {
+  id: string;
+  type: string;
+  label: string;
+  description: string;
+  params: Record<string, unknown>;
+  impact: string;
+  requiresConfirmation: boolean;
+  createdAt: string;
+}
+
+export interface AgentAction {
+  type: string;
+  data?: unknown;
+}
+
+export interface AssistantResponse {
+  text: string;
+  actions: AgentAction[];
+  proposals: AgentProposal[];
+  errors: string[];
+}
+
 export function sendAssistantMessage(
   messages: AssistantMessage[],
   context: { candidates: Candidate[]; jobs: JobRequirement[]; reviewTasks: ReviewTask[] },
-): Promise<{ text: string; actions: Array<{ type: string; data?: unknown }> }> {
-  return request<{ text: string; actions: Array<{ type: string; data?: unknown }> }>(
+): Promise<AssistantResponse> {
+  return request<AssistantResponse>(
     `${BASE}/gemini/chat`,
     json('POST', { messages, context }),
   );
+}
+
+export function confirmAssistantProposal(proposalId: string): Promise<AssistantResponse> {
+  return request<AssistantResponse>(`${BASE}/agent/actions/${proposalId}/confirm`, { method: 'POST' });
 }
 
 // ---------------------------------------------------------------------------

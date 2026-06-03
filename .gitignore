@@ -11,3 +11,10 @@ logs/
 quarantine/
 intake/
 requirements/
+*.db
+skill_audit.db-wal
+skill_audit.db-shm
+shard_graph.json
+shard_index.json
+nova_usage.jsonl
+shards/

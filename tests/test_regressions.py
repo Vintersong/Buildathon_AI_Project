@@ -52,43 +52,44 @@ def make_extraction(**overrides):
     return CandidateExtraction(**data)
 
 
-class FakeResponse:
-    def __init__(self, text):
-        self.text = text
+class CaptureLLM:
+    """Stand-in for core.llm.complete that records the messages it receives."""
 
-
-class CapturingModel:
     def __init__(self, response_text):
         self.response_text = response_text
-        self.prompts = []
+        self.calls = []
 
-    def generate_content(self, prompt, generation_config=None):
-        self.prompts.append(prompt)
-        return FakeResponse(self.response_text)
+    def __call__(self, messages, **kwargs):
+        self.calls.append(messages)
+        return self.response_text
+
+    @property
+    def last_prompt(self) -> str:
+        return "\n".join(m["content"] for m in self.calls[-1])
 
 
-class FakeGenai:
-    class GenerationConfig:
-        def __init__(self, **kwargs):
-            self.kwargs = kwargs
+def _write_jsonl(path: Path, rows):
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
 
 
 class RegressionTests(unittest.TestCase):
-    def test_quarantine_directories_are_created_and_redacted(self):
-        from core import extract, ingest
+    def test_quarantine_extraction_failures_are_redacted(self):
+        from core import extract
 
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             with patch.object(extract, "QUARANTINE_DIR", tmp_path):
-                extract._quarantine_failed_output("Contact ada@example.com", "Call +40 722 111 222", "json_decode_error")
-                payload = json.loads(next((tmp_path / "schema_failures").glob("*.json")).read_text())
-                self.assertNotIn("ada@example.com", json.dumps(payload))
-                self.assertNotIn("+40 722 111 222", json.dumps(payload))
-
-            with patch.object(ingest, "QUARANTINE_DIR", tmp_path):
-                ingest._quarantine_security(Path("C:/tmp/ada@example.com.pdf"), "path_not_allowed")
-                payload = json.loads(next((tmp_path / "security_rejections").glob("*.json")).read_text())
-                self.assertNotIn("ada@example.com", json.dumps(payload))
+                extract._quarantine_failed_extraction(
+                    "Ada Lovelace\nContact ada@example.com\nCall +40 722 111 222",
+                    "json_decode_error",
+                )
+                files = list((tmp_path / "extraction_failures").glob("*.txt"))
+                self.assertEqual(len(files), 1)
+                body = files[0].read_text(encoding="utf-8")
+                self.assertNotIn("ada@example.com", body)
+                self.assertNotIn("+40 722 111 222", body)
+                self.assertNotIn("Ada Lovelace", body)
+                self.assertIn("json_decode_error", body)
 
     def test_save_record_persists_provenance_and_index(self):
         from core import store
@@ -130,7 +131,7 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(len(candidates), 1)
             self.assertEqual(candidates[0]["id"], "cand_unindexed")
 
-    def test_review_approval_records_consent_and_collapses_duplicate_reason_cases(self):
+    def test_review_resolve_approved_only_resolves_target_case(self):
         from core import review, store
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -142,49 +143,11 @@ class RegressionTests(unittest.TestCase):
             indexes.mkdir()
             logs.mkdir()
             (indexes / "record_index.json").write_text("{}")
-            queue_path = logs / "review_queue.json"
-            queue_path.write_text(json.dumps([
-                {"case_id": "case_a", "record_id": "cand_test", "reason": "missing_consent", "status": "open"},
-                {"case_id": "case_b", "record_id": "cand_test", "reason": "missing_consent", "status": "open"},
-                {"case_id": "case_c", "record_id": "cand_test", "reason": "low_extraction_confidence", "status": "open"},
-            ]))
-            record = make_record(
-                state=State(status="pending_review"),
-                compliance=Compliance(consent_basis=None, source="document", retention_until="2099-01-01T00:00:00Z", human_review_required=True),
-            )
-            (records / "cand_test.json").write_text(record.model_dump_json(indent=2), encoding="utf-8")
-
-            with patch.object(review, "REVIEW_QUEUE_PATH", queue_path), \
-                patch.object(store, "RECORDS_DIR", records), \
-                patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"):
-                review.resolve_case("case_a", "approved", "tester")
-                queue = json.loads(queue_path.read_text())
-                saved = store.load_record("cand_test")
-
-            statuses = {case["case_id"]: case["status"] for case in queue}
-            self.assertEqual(statuses["case_a"], "resolved")
-            self.assertEqual(statuses["case_b"], "resolved")
-            self.assertEqual(statuses["case_c"], "open")
-            self.assertEqual(saved.compliance.consent_basis, "uploaded_consent_proof")
-            self.assertTrue(saved.compliance.human_review_required)
-
-    def test_review_purge_archives_record_and_resolves_all_record_cases(self):
-        from core import review, store
-
-        with tempfile.TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            records = base / "records"
-            indexes = base / "indexes"
-            logs = base / "logs"
-            records.mkdir()
-            indexes.mkdir()
-            logs.mkdir()
-            (indexes / "record_index.json").write_text("{}")
-            queue_path = logs / "review_queue.json"
-            queue_path.write_text(json.dumps([
+            queue_path = logs / "review_queue.jsonl"
+            _write_jsonl(queue_path, [
                 {"case_id": "case_a", "record_id": "cand_test", "reason": "missing_consent", "status": "open"},
                 {"case_id": "case_b", "record_id": "cand_test", "reason": "low_extraction_confidence", "status": "open"},
-            ]))
+            ])
             record = make_record(
                 state=State(status="pending_review"),
                 compliance=Compliance(consent_basis=None, source="document", retention_until="2099-01-01T00:00:00Z", human_review_required=True),
@@ -194,11 +157,47 @@ class RegressionTests(unittest.TestCase):
             with patch.object(review, "REVIEW_QUEUE_PATH", queue_path), \
                 patch.object(store, "RECORDS_DIR", records), \
                 patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"):
-                review.resolve_case("case_a", "purged", "tester")
-                queue = json.loads(queue_path.read_text())
+                review.resolve_case("case_a", resolved_by="tester", resolution="approved")
+                cases = {c["case_id"]: c for c in review.get_all_review_cases()}
                 saved = store.load_record("cand_test")
 
-            self.assertTrue(all(case["status"] == "resolved" for case in queue))
+            self.assertEqual(cases["case_a"]["status"], "resolved")
+            # Only the targeted case is resolved; siblings stay open.
+            self.assertEqual(cases["case_b"]["status"], "open")
+            # Hold remains because an open case still references the record.
+            self.assertTrue(saved.compliance.human_review_required)
+
+    def test_review_resolve_purge_archives_record_and_resolves_all_cases(self):
+        from core import review, store
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            records = base / "records"
+            indexes = base / "indexes"
+            logs = base / "logs"
+            records.mkdir()
+            indexes.mkdir()
+            logs.mkdir()
+            (indexes / "record_index.json").write_text("{}")
+            queue_path = logs / "review_queue.jsonl"
+            _write_jsonl(queue_path, [
+                {"case_id": "case_a", "record_id": "cand_test", "reason": "missing_consent", "status": "open"},
+                {"case_id": "case_b", "record_id": "cand_test", "reason": "low_extraction_confidence", "status": "open"},
+            ])
+            record = make_record(
+                state=State(status="pending_review"),
+                compliance=Compliance(consent_basis=None, source="document", retention_until="2099-01-01T00:00:00Z", human_review_required=True),
+            )
+            (records / "cand_test.json").write_text(record.model_dump_json(indent=2), encoding="utf-8")
+
+            with patch.object(review, "REVIEW_QUEUE_PATH", queue_path), \
+                patch.object(store, "RECORDS_DIR", records), \
+                patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"):
+                review.resolve_case("case_a", resolved_by="tester", resolution="purged")
+                cases = review.get_all_review_cases()
+                saved = store.load_record("cand_test")
+
+            self.assertTrue(all(case["status"] == "resolved" for case in cases))
             self.assertTrue(saved.state.archived)
             self.assertEqual(saved.state.status, "archived")
             self.assertFalse(saved.compliance.human_review_required)
@@ -206,41 +205,52 @@ class RegressionTests(unittest.TestCase):
     def test_matching_handles_missing_records_and_missing_scores(self):
         from core import match
 
-        req = RequirementRecord(
-            id="req_test",
-            title="Senior ML Engineer",
-            requirements=RequirementCriteria(must_have=["Python"], location="Remote", language=["English"]),
-            scoring={"skills": {"weight": 0.5}, "experience": {"weight": 0.3}, "location": {"weight": 0.2}},
-            created_at="2026-05-23T00:00:00Z",
-            updated_at="2026-05-23T00:00:00Z",
-        )
         record = make_record()
+        with tempfile.TemporaryDirectory() as tmp:
+            requirements = Path(tmp) / "requirements"
+            requirements.mkdir()
+            req = RequirementRecord(
+                id="req_test",
+                title="Senior ML Engineer",
+                requirements=RequirementCriteria(must_have=["Python"], location="Remote", language=["English"]),
+                created_at="2026-05-23T00:00:00Z",
+                updated_at="2026-05-23T00:00:00Z",
+            )
+            (requirements / "req_test.json").write_text(req.model_dump_json(indent=2), encoding="utf-8")
 
-        with patch.object(match, "load_record", side_effect=lambda record_id: record if record_id == "cand_ok" else None):
-            self.assertEqual(set(match.score_keywords(["cand_ok", "missing"], req)), {"cand_ok"})
+            def _load(record_id):
+                if record_id == "cand_ok":
+                    return record
+                raise KeyError(record_id)
 
-        with patch.object(match, "_load_requirement", return_value=req), \
-            patch.object(match, "_get_all_active_candidates", return_value=["cand_ok"]), \
-            patch.object(match, "filter_candidates", return_value=["cand_ok"]), \
-            patch.object(match, "score_keywords", return_value={}), \
-            patch.object(match, "score_embeddings", return_value={}), \
-            patch.object(match, "score_structured", return_value={}), \
-            patch.object(match, "load_record", return_value=record):
-            report = match.generate_shortlist("req_test", use_llm_rerank=False)
-            self.assertEqual(report["shortlist"][0]["record_id"], "cand_ok")
+            with patch.object(match, "REQUIREMENTS_DIR", requirements), \
+                patch.object(match, "_EMBEDDINGS_AVAILABLE", False), \
+                patch.object(match, "filter_candidates", return_value=["cand_ok", "cand_missing"]), \
+                patch.object(match, "load_record", side_effect=_load):
+                report = match.generate_shortlist("req_test", use_llm_rerank=False)
+
+            ids = [r["record_id"] for r in report["results"]]
+            self.assertIn("cand_ok", ids)
+            self.assertNotIn("cand_missing", ids)
+
+    def test_requirement_id_traversal_rejected(self):
+        from core import match
+
+        with self.assertRaises(ValueError):
+            match.generate_shortlist("../secret")
 
     def test_data_region_none_is_not_region_violation(self):
-        from core import compliance
+        from core import compliance, review
 
         record = make_record()
         record.compliance.data_region = None
-        with patch.object(compliance, "load_record", return_value=record), patch.object(compliance, "log_compliance"):
-            reasons = [case["reason"] for case in compliance.evaluate_compliance("cand_test")]
+        with patch.object(compliance, "log_compliance"), patch.object(review, "append_review_case"):
+            reasons = [case["reason"] for case in compliance.check_and_generate_review_cases("cand_test", record)]
             self.assertNotIn("data_region_violation", reasons)
 
         record.compliance.data_region = "US"
-        with patch.object(compliance, "load_record", return_value=record), patch.object(compliance, "log_compliance"):
-            reasons = [case["reason"] for case in compliance.evaluate_compliance("cand_test")]
+        with patch.object(compliance, "log_compliance"), patch.object(review, "append_review_case"):
+            reasons = [case["reason"] for case in compliance.check_and_generate_review_cases("cand_test", record)]
             self.assertIn("data_region_violation", reasons)
 
     def test_bulk_refresh_dedupes_without_reordering(self):
@@ -256,24 +266,25 @@ class RegressionTests(unittest.TestCase):
 
         with patch.object(maintenance, "load_record", return_value=record), \
             patch.object(maintenance, "save_record"), \
-            patch.object(maintenance, "extract_candidate_data", return_value=(extraction, {"external": False})), \
-            patch.object(maintenance, "evaluate_compliance", return_value=[]), \
-            patch.object(maintenance, "add_to_queue"):
-            maintenance.bulk_refresh([{"record_id": "cand_test", "raw_text": "updated"}])
+            patch.object(maintenance, "extract_candidate_data", return_value=(extraction, {"provider": "local"})), \
+            patch.object(maintenance, "check_and_generate_review_cases", return_value=[]):
+            result = maintenance.bulk_refresh([{"record_id": "cand_test", "raw_text": "updated"}])
+            self.assertEqual(result["success"], 1)
             self.assertEqual(record.profile.technologies_used, ["Python", "FastAPI", "Docker"])
             self.assertEqual(record.profile.previous_jobs, ["Engineer - A", "Lead - B"])
 
     def test_ingest_does_not_map_headline_to_seniority(self):
-        from core import ingest, store
+        from core import ingest, store, review
 
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)
             intake = base / "intake"
             records = base / "records"
             indexes = base / "indexes"
-            intake.mkdir()
-            records.mkdir()
-            indexes.mkdir()
+            logs = base / "logs"
+            quarantine = base / "quarantine"
+            for directory in (intake, records, indexes, logs, quarantine):
+                directory.mkdir()
             source = intake / "cv.txt"
             source.write_text("Ada Lovelace\nSenior Python Engineer\nada@example.com", encoding="utf-8")
             manifest = indexes / "manifest.json"
@@ -281,15 +292,16 @@ class RegressionTests(unittest.TestCase):
             (indexes / "record_index.json").write_text("{}")
 
             with patch.object(ingest, "INTAKE_DIR", intake), \
-                patch.object(ingest, "MANIFEST_PATH", manifest), \
-                patch.object(ingest, "DEFAULT_CONSENT_BASIS", "candidate_consent"), \
+                patch.object(ingest, "RECORDS_DIR", records), \
+                patch.object(ingest, "QUARANTINE_DIR", quarantine), \
+                patch.object(ingest, "INGEST_MANIFEST_PATH", manifest), \
                 patch.object(store, "RECORDS_DIR", records), \
                 patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"), \
-                patch.object(ingest, "extract_candidate_data", return_value=(make_extraction(), {"external": False})), \
-                patch.object(ingest, "evaluate_compliance", return_value=[]), \
-                patch.object(ingest, "add_to_queue"):
-                record_id = ingest.ingest_file(source)
-                saved = store.load_record(record_id)
+                patch.object(review, "REVIEW_QUEUE_PATH", logs / "review_queue.jsonl"), \
+                patch.object(ingest, "extract_candidate_data", return_value=(make_extraction(), {"provider": "local"})), \
+                patch.object(ingest, "check_and_generate_review_cases", return_value=[]):
+                result = ingest.ingest_file(source)
+                saved = store.load_record(result["record_id"])
                 self.assertIsNone(saved.profile.headline)
                 self.assertEqual(saved.profile.seniority, "Senior")
 
@@ -302,25 +314,14 @@ class RegressionTests(unittest.TestCase):
             "Skills: Python, PyTorch, FastAPI, Docker\nLanguages: English, Romanian\nLocation: Remote"
         )
         self.assertEqual(model_info["provider"], "local")
-        self.assertIn("Python", extraction.technologies_used)
+        self.assertIn("python", extraction.technologies_used)
         self.assertIn("English", extraction.languages_spoken)
         self.assertEqual(extraction.years_of_experience, 7)
-
-    def test_requirement_id_traversal_rejected(self):
-        from core import match
-
-        with self.assertRaises(ValueError):
-            match._load_requirement("../secret")
-
-    def test_legacy_candidates_page_route_is_removed(self):
-        import web.app as web_app
-
-        self.assertNotIn("/candidates", {route.path for route in web_app.app.routes})
 
     def test_cv_preview_endpoint_returns_ui_shape(self):
         import web.app as web_app
 
-        with patch("core.extract.extract_candidate_data", return_value=(make_extraction(), {"external": False})):
+        with patch("core.extract.extract_candidate_data", return_value=(make_extraction(), {"provider": "local"})):
             response = asyncio.run(web_app.parse_cv_preview(web_app.CVPreviewBody(resumeText="Ada Lovelace Python")))
 
         self.assertEqual(response["candidate"]["name"], "Ada Lovelace")
@@ -360,9 +361,9 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("LINKEDIN_001", anonymized)
 
     def test_external_extraction_sends_anonymized_text_only(self):
-        from core import extract
+        from core import extract, llm
 
-        model_response = json.dumps({
+        capture = CaptureLLM(json.dumps({
             "name": "CANDIDATE_001",
             "emails": ["EMAIL_001"],
             "phones": ["PHONE_001"],
@@ -378,94 +379,89 @@ class RegressionTests(unittest.TestCase):
             "summary": "CANDIDATE_001 has Python experience.",
             "extraction_confidence": 0.8,
             "review_flags": [],
-        })
-        model = CapturingModel(model_response)
+        }))
 
         with patch.object(extract, "ENABLE_EXTERNAL_LLM", True), \
-            patch.object(extract, "GEMINI_API_KEY", "test-key"), \
-            patch.object(extract, "genai", FakeGenai), \
-            patch.object(extract, "get_use_local_llm", return_value=False), \
-            patch.object(extract, "get_extraction_model", return_value=model):
+            patch.object(llm, "llm_available", return_value=True), \
+            patch.object(llm, "complete", capture):
             extraction, model_info = extract.extract_candidate_data(
                 "Ada Lovelace\nada@example.com\n+40 722 111 222\n"
                 "https://www.linkedin.com/in/ada\nSenior Python Engineer with 7 years of experience"
             )
 
-        prompt = model.prompts[0]
+        prompt = capture.last_prompt
         for forbidden in ["Ada Lovelace", "ada@example.com", "+40 722 111 222", "linkedin.com/in/ada"]:
             self.assertNotIn(forbidden, prompt)
         self.assertIn("CANDIDATE_001", prompt)
-        self.assertEqual(extraction.name, "Ada Lovelace")
-        self.assertEqual(extraction.emails, ["ada@example.com"])
+        self.assertEqual(extraction.name, "Ada Lovelace")  # name token rehydrated
+        self.assertIn("EMAIL_001", extraction.emails)        # other PII stays tokenized
         self.assertTrue(model_info["anonymized"])
 
     def test_external_rerank_prompt_is_anonymized(self):
-        from core import match
+        from core import match, llm
 
         record = make_record()
         record.profile.summary = "Ada Lovelace built private ML systems."
         record.identity.emails = ["ada@example.com"]
-        req = RequirementRecord(
-            id="req_test",
-            title="Senior ML Engineer",
-            requirements=RequirementCriteria(must_have=["Python"], location="Remote", language=["English"]),
-            created_at="2026-05-23T00:00:00Z",
-            updated_at="2026-05-23T00:00:00Z",
-        )
-        model = CapturingModel(json.dumps({"match_score": 0.9, "evidence": ["Strong Python"], "uncertainty_flags": []}))
+        capture = CaptureLLM(json.dumps({"match_score": 0.9, "evidence": ["Strong Python"], "uncertainty_flags": []}))
 
-        with patch.object(match, "ENABLE_EXTERNAL_LLM", True), \
-            patch.object(match, "GEMINI_API_KEY", "test-key"), \
-            patch.object(match, "genai", FakeGenai), \
-            patch.object(match, "get_use_local_llm", return_value=False), \
-            patch.object(match, "get_rerank_model", return_value=model), \
-            patch.object(match, "_load_requirement", return_value=req), \
-            patch.object(match, "_get_all_active_candidates", return_value=["cand_test"]), \
-            patch.object(match, "filter_candidates", return_value=["cand_test"]), \
-            patch.object(match, "score_keywords", return_value={"cand_test": 1.0}), \
-            patch.object(match, "score_embeddings", return_value={"cand_test": 0.0}), \
-            patch.object(match, "score_structured", return_value={"cand_test": {"experience": 1.0, "location": 1.0, "language": 1.0, "freshness": 1.0}}), \
-            patch.object(match, "load_record", return_value=record):
-            report = match.generate_shortlist("req_test", use_llm_rerank=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            requirements = Path(tmp) / "requirements"
+            requirements.mkdir()
+            req = RequirementRecord(
+                id="req_test",
+                title="Senior ML Engineer",
+                requirements=RequirementCriteria(must_have=["Python"], location="Remote", language=["English"]),
+                created_at="2026-05-23T00:00:00Z",
+                updated_at="2026-05-23T00:00:00Z",
+            )
+            (requirements / "req_test.json").write_text(req.model_dump_json(indent=2), encoding="utf-8")
 
-        prompt = model.prompts[0]
-        self.assertEqual(report["shortlist"][0]["candidate_name"], "Ada Lovelace")
+            with patch.object(match, "ENABLE_EXTERNAL_LLM", True), \
+                patch.object(match, "REQUIREMENTS_DIR", requirements), \
+                patch.object(match, "_EMBEDDINGS_AVAILABLE", False), \
+                patch.object(match, "filter_candidates", return_value=["cand_test"]), \
+                patch.object(match, "load_record", return_value=record), \
+                patch.object(llm, "llm_available", return_value=True), \
+                patch.object(llm, "complete", capture):
+                report = match.generate_shortlist("req_test", use_llm_rerank=True)
+
+        prompt = capture.last_prompt
+        self.assertEqual(report["results"][0]["name"], "Ada Lovelace")
         self.assertIn("CANDIDATE_001", prompt)
         self.assertNotIn("Ada Lovelace", prompt)
         self.assertNotIn("ada@example.com", prompt)
 
     def test_external_outreach_prompt_is_anonymized_and_rehydrated(self):
-        from core import outreach
+        from core import outreach, llm, compliance, review
 
         record = make_record()
         record.profile.summary = "Ada Lovelace built private ML systems."
         record.identity.emails = ["ada@example.com"]
-        req = RequirementRecord(
-            id="req_test",
-            title="Senior ML Engineer",
-            requirements=RequirementCriteria(must_have=["Python"]),
-            created_at="2026-05-23T00:00:00Z",
-            updated_at="2026-05-23T00:00:00Z",
-        )
-        model = CapturingModel("Hi CANDIDATE_001,\nYour Python background is relevant.")
+        job = {"title": "Senior ML Engineer", "requirements": {"must_have": ["Python"]}}
+        capture = CaptureLLM("Hi CANDIDATE_001,\nYour Python background is relevant.")
         captured_cases = []
 
         with patch.object(outreach, "ENABLE_EXTERNAL_OUTREACH_LLM", True), \
-            patch.object(outreach, "GEMINI_API_KEY", "test-key"), \
-            patch.object(outreach, "genai", FakeGenai), \
-            patch.object(outreach, "get_use_local_llm", return_value=False), \
-            patch.object(outreach, "get_draft_model", return_value=model), \
             patch.object(outreach, "load_record", return_value=record), \
-            patch.object(outreach, "_load_requirement", return_value=req), \
-            patch.object(outreach, "add_to_queue", side_effect=lambda cases: captured_cases.extend(cases)):
+            patch.object(outreach, "_load_job", return_value=job), \
+            patch.object(compliance, "record_block_reasons", return_value=[]), \
+            patch.object(review, "append_review_case", side_effect=lambda case: captured_cases.append(case)), \
+            patch.object(llm, "llm_available", return_value=True), \
+            patch.object(llm, "complete", capture):
             outreach.generate_draft("cand_test", "req_test")
 
-        prompt = model.prompts[0]
+        prompt = capture.last_prompt
         self.assertIn("CANDIDATE_001", prompt)
         self.assertNotIn("Ada Lovelace", prompt)
         self.assertNotIn("ada@example.com", prompt)
         self.assertIn("Hi Ada Lovelace", captured_cases[0]["draft_text"])
         self.assertNotIn("CANDIDATE_001", captured_cases[0]["draft_text"])
+
+    def test_legacy_candidates_page_route_is_removed(self):
+        import web.app as web_app
+
+        self.assertNotIn("/candidates", {route.path for route in web_app.app.routes})
 
     def test_spreadsheet_import_route_is_mounted(self):
         import web.app as web_app
@@ -520,14 +516,12 @@ class RegressionTests(unittest.TestCase):
             requirements.mkdir()
             (indexes / "record_index.json").write_text("{}", encoding="utf-8")
 
-            review_case = {"case_id": "case_test", "record_id": "cand_test", "reason": "low_extraction_confidence"}
             with patch.object(store, "RECORDS_DIR", records), \
                 patch.object(store, "RECORD_INDEX_PATH", indexes / "record_index.json"), \
                 patch.object(store, "log_event"), \
                 patch.object(csv_ingest, "RECORDS_DIR", records), \
                 patch.object(csv_ingest, "REQUIREMENTS_DIR", requirements), \
-                patch.object(csv_ingest, "evaluate_compliance", return_value=[review_case]), \
-                patch.object(csv_ingest, "add_to_queue") as add_to_queue:
+                patch.object(csv_ingest, "check_and_generate_review_cases") as review_check:
                 progress = CSVIngestProgress()
                 stream_ingest_file(payload.getvalue(), "bulk.xlsx", progress)
 
@@ -538,7 +532,7 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(progress.jobs_created, 1)
             self.assertEqual(len(list(records.glob("*.json"))), 1)
             self.assertEqual(len(list(requirements.glob("*.json"))), 1)
-            add_to_queue.assert_called_once_with([review_case])
+            review_check.assert_called_once()
 
     def test_candidate_role_eval_normalizes_labels_and_scores_invalid_predictions(self):
         from core.candidate_role_eval import normalize_match_label

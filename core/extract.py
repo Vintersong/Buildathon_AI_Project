@@ -194,7 +194,7 @@ def extract_candidate_data(text: str) -> tuple["CandidateExtraction", Dict[str, 
         if extraction.name:
             extraction.name = rehydrate_text(extraction.name, anon.mapping, allowed={"CANDIDATE"})
 
-        return extraction, {"model": llm.active_model(), "provider": get_active_provider()}
+        return extraction, {"model": llm.active_model(), "provider": get_active_provider(), "anonymized": True}
 
     except (json.JSONDecodeError, ValidationError) as e:
         _quarantine_failed_extraction(text, str(e))
@@ -244,10 +244,34 @@ def extract_candidate_data_heuristic(text: str) -> tuple["CandidateExtraction", 
     text_lower = text.lower()
     technologies = [t for t in tech_keywords if t in text_lower]
 
+    # Years of experience — first "<n> years" mention.
+    yoe = None
+    yoe_m = _re.search(r"(\d{1,2})\+?\s*years?", text_lower)
+    if yoe_m:
+        yoe = int(yoe_m.group(1))
+
+    # Seniority — first level keyword present.
+    seniority = None
+    for level in ("intern", "junior", "mid", "senior", "lead"):
+        if _re.search(rf"\b{level}\b", text_lower):
+            seniority = level.capitalize()
+            break
+
+    # Languages / Location — labelled lines like "Languages: English, Romanian".
+    languages: list[str] = []
+    location = None
+    for line in lines:
+        low = line.lower()
+        if low.startswith("languages:"):
+            languages = [p.strip() for p in line.split(":", 1)[1].split(",") if p.strip()]
+        elif low.startswith("location:"):
+            location = line.split(":", 1)[1].strip() or None
+
     filled = sum([
-        bool(name), bool(emails), bool(technologies), bool(linkedin_url)
+        bool(name), bool(emails), bool(technologies), bool(linkedin_url),
+        yoe is not None, bool(languages),
     ])
-    confidence = round(min(0.35 + filled * 0.10, 0.65), 2)
+    confidence = round(min(0.35 + filled * 0.08, 0.65), 2)
 
     return (
         CandidateExtraction(
@@ -257,13 +281,13 @@ def extract_candidate_data_heuristic(text: str) -> tuple["CandidateExtraction", 
             linkedin_url=linkedin_url,
             headline=None,
             summary=None,
-            seniority=None,
-            years_of_experience=None,
+            seniority=seniority,
+            years_of_experience=yoe,
             technologies_used=technologies,
             previous_jobs=[],
             study_degrees=[],
-            languages_spoken=[],
-            location=None,
+            languages_spoken=languages,
+            location=location,
             projects_developed=[],
             extraction_confidence=confidence,
             sensitive_data_detected=False,
@@ -276,5 +300,7 @@ def _quarantine_failed_extraction(text: str, reason: str):
     quarantine_id = f"ext_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     folder = QUARANTINE_DIR / "extraction_failures"
     folder.mkdir(parents=True, exist_ok=True)
+    # Redact PII before persisting — quarantined CVs must not leak raw identifiers.
+    safe_text = anonymize_candidate_text(text).anonymized_text
     with open(folder / f"{quarantine_id}.txt", "w", encoding="utf-8") as f:
-        f.write(f"Reason: {reason}\n\n{text}")
+        f.write(f"Reason: {reason}\n\n{safe_text}")

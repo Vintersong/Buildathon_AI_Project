@@ -156,7 +156,7 @@ def _merge_record(record: CandidateRecord, extraction, now: str) -> list[dict]:
         changes.append({"operation": "union", "path": "/identity/emails", "added": new_emails})
 
     record.scores.extraction_confidence = extraction.extraction_confidence
-    record.compliance.sensitive_data_detected = extraction.sensitive_data_detected
+    record.compliance.sensitive_data_detected = getattr(extraction, "sensitive_data_detected", None) or []
     record.updated_at = now
 
     return changes
@@ -292,7 +292,7 @@ def ingest_file(
             source="cv_upload",
             data_region="EEA",
             retention_until=retention_until,
-            sensitive_data_detected=extraction.sensitive_data_detected,
+            sensitive_data_detected=getattr(extraction, "sensitive_data_detected", None) or [],
             human_review_required=extraction.extraction_confidence < get_confidence_threshold(),
         ),
         state=State(),

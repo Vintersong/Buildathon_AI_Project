@@ -872,16 +872,16 @@ async def run_shortlist(req_id: str):
         raise HTTPException(status_code=422, detail=str(e))
 
     shortlist = []
-    for item in result.get("shortlist", []):
+    for item in result.get("results", []):
         rec_id = item.get("record_id", "")
-        rec = load_record(rec_id)
-        name = rec.identity.primary_name if rec else rec_id
+        name = item.get("name") or rec_id
+        confidence = item.get("llm_score", item.get("combined_score", 0.0))
         shortlist.append({
             "id": rec_id,
             "name": name,
-            "confidence": item.get("match_score", 0.0),
+            "confidence": confidence,
             "explanation": "; ".join(item.get("evidence", [])),
-            "status": "pending_review" if item.get("review_required") else "active",
+            "status": "active",
             "initials": _initials(name),
         })
     return shortlist

@@ -37,6 +37,14 @@ DEFAULT_RERANK_FUNNEL_SIZE = int(os.getenv("RERANK_FUNNEL_SIZE", "15"))
 DEFAULT_RERANK_MODEL = "gemini-2.5-pro"
 
 
+def _req(req: RequirementRecord, name: str, default=None):
+    """Read a requirement criterion, tolerating both model and dict shapes."""
+    crit = req.requirements
+    if isinstance(crit, dict):
+        return crit.get(name, default)
+    return getattr(crit, name, default)
+
+
 def _scoring_weights(req: RequirementRecord) -> Dict[str, float]:
     """
     Return a weight map for structured scoring dimensions.
@@ -78,8 +86,8 @@ def score_structured(
     scores: Dict[str, float] = {}
 
     # --- Skills: keyword overlap as a proxy ---
-    must = set(s.lower() for s in (req.requirements.get("must_have") or []))
-    nice = set(s.lower() for s in (req.requirements.get("nice_to_have") or []))
+    must = set(s.lower() for s in (_req(req, "must_have") or []))
+    nice = set(s.lower() for s in (_req(req, "nice_to_have") or []))
     cand_skills = set(s.lower() for s in (record.profile.technologies_used or []))
 
     if must:
@@ -93,14 +101,14 @@ def score_structured(
     scores["skills"] = 0.7 * must_overlap + 0.3 * nice_overlap
 
     # --- Seniority ---
-    req_seniority = req.requirements.get("seniority")
+    req_seniority = _req(req, "seniority")
     if req_seniority and record.profile.seniority:
         scores["seniority"] = _seniority_score(record.profile.seniority, req_seniority)
     else:
         scores["seniority"] = 0.5
 
     # --- Experience ---
-    req_yoe = req.requirements.get("years_of_experience")
+    req_yoe = _req(req, "years_of_experience")
     cand_yoe = record.profile.years_of_experience
     if req_yoe and cand_yoe is not None:
         if cand_yoe >= req_yoe:
@@ -111,7 +119,7 @@ def score_structured(
         scores["experience"] = 0.5
 
     # --- Location ---
-    req_location = (req.requirements.get("location") or "").strip().lower()
+    req_location = (_req(req, "location") or "").strip().lower()
     is_wildcard_location = req_location in ("", "remote", "anywhere", "worldwide")
     if is_wildcard_location:
         scores["location"] = 1.0
@@ -121,7 +129,7 @@ def score_structured(
         scores["location"] = 0.5  # unknown location — neutral, not perfect
 
     # --- Languages ---
-    req_langs = [l.lower() for l in (req.requirements.get("languages") or [])]
+    req_langs = [l.lower() for l in (_req(req, "language") or [])]
     if not req_langs:
         scores["languages"] = 1.0
     else:
@@ -141,7 +149,7 @@ def filter_candidates(
     if not RECORDS_DIR.exists():
         return []
 
-    req_location = (req.requirements.get("location") or "").strip().lower()
+    req_location = (_req(req, "location") or "").strip().lower()
     is_wildcard_location = req_location in ("", "remote", "anywhere", "worldwide")
 
     passing = []
@@ -175,6 +183,16 @@ def filter_candidates(
     return passing
 
 
+def _keyword_evidence(job_keywords: List[str], cand_text: str) -> Dict[str, Any]:
+    """Build keyword-overlap evidence (ratio + matched terms) for a candidate."""
+    job_keywords = job_keywords or []
+    req_text = " ".join(job_keywords)
+    overlap = calculate_keyword_overlap(req_text, cand_text)
+    cand_lower = (cand_text or "").lower()
+    matched = [k for k in job_keywords if k.lower() in cand_lower]
+    return {"overlap_ratio": overlap, "matched_keywords": matched}
+
+
 def build_candidate_profile_text(record: CandidateRecord) -> str:
     """
     Build a human-readable summary of a candidate for embedding / LLM prompt.
@@ -204,15 +222,18 @@ def build_job_text(req: RequirementRecord) -> str:
     parts = [req.title or ""]
     if req.description:
         parts.append(req.description[:500])
-    reqs = req.requirements or {}
-    if reqs.get("must_have"):
-        parts.append("Must have: " + ", ".join(reqs["must_have"]))
-    if reqs.get("nice_to_have"):
-        parts.append("Nice to have: " + ", ".join(reqs["nice_to_have"]))
-    if reqs.get("seniority"):
-        parts.append(f"Seniority: {reqs['seniority']}")
-    if reqs.get("location"):
-        parts.append(f"Location: {reqs['location']}")
+    must_have = _req(req, "must_have")
+    nice_to_have = _req(req, "nice_to_have")
+    seniority = _req(req, "seniority")
+    location = _req(req, "location")
+    if must_have:
+        parts.append("Must have: " + ", ".join(must_have))
+    if nice_to_have:
+        parts.append("Nice to have: " + ", ".join(nice_to_have))
+    if seniority:
+        parts.append(f"Seniority: {seniority}")
+    if location:
+        parts.append(f"Location: {location}")
     return "\n".join(p for p in parts if p)
 
 
@@ -243,7 +264,7 @@ def llm_rerank_candidates(
             reranked.append(cand)
             continue
 
-        anon = anonymize_candidate_record(record)
+        anon = anonymize_candidate_record(record, record_id)
         cand_text = build_candidate_profile_text(record)
 
         prompt_messages = [
@@ -317,6 +338,10 @@ def generate_shortlist(
         )
         funnel_size = top_n
 
+    # Reject path-traversal attempts before touching the filesystem.
+    if "/" in req_id or "\\" in req_id or ".." in req_id:
+        raise ValueError(f"Invalid requirement id: {req_id}")
+
     req_path = REQUIREMENTS_DIR / f"{req_id}.json"
     if not req_path.exists():
         raise ValueError(f"Requirement {req_id} not found")
@@ -345,9 +370,9 @@ def generate_shortlist(
                 cand_embedding = get_embedding(cand_text)
                 emb_score = float(cosine_similarity(job_embedding, cand_embedding))
 
-                keyword_evidence = calculate_keyword_overlap(
+                keyword_evidence = _keyword_evidence(
+                    (_req(req, "must_have") or []) + (_req(req, "nice_to_have") or []),
                     cand_text,
-                    (req.requirements.get("must_have") or []) + (req.requirements.get("nice_to_have") or []),
                 )
 
                 candidates_with_scores.append({
@@ -366,8 +391,8 @@ def generate_shortlist(
     if not _EMBEDDINGS_AVAILABLE_local:
         # Fallback: rank by keyword overlap alone
         job_keywords = (
-            (req.requirements.get("must_have") or []) +
-            (req.requirements.get("nice_to_have") or [])
+            (_req(req, "must_have") or []) +
+            (_req(req, "nice_to_have") or [])
         )
         for record_id in candidate_ids:
             try:
@@ -375,7 +400,7 @@ def generate_shortlist(
             except Exception:
                 continue
             cand_text = build_candidate_profile_text(record)
-            keyword_evidence = calculate_keyword_overlap(cand_text, job_keywords)
+            keyword_evidence = _keyword_evidence(job_keywords, cand_text)
             score = keyword_evidence.get("overlap_ratio", 0.0)
             candidates_with_scores.append({
                 "record_id": record_id,

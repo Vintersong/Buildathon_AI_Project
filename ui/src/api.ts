@@ -156,21 +156,31 @@ export function fetchAuditEvents(): Promise<AuditEvent[]> {
   return request<AuditEvent[]>(`${BASE}/audit`);
 }
 
+export type LlmProvider = 'gemini' | 'openai' | 'anthropic' | 'local';
+
 export interface AppConfig {
+  provider: LlmProvider;
   model: string;
   confidence_threshold: number;
   sovereign_cloud: boolean;
   use_local_llm: boolean;
   gemini_api_key_set: boolean;
   gemini_api_key_last4: string | null;
+  openai_api_key_set: boolean;
+  openai_api_key_last4: string | null;
+  anthropic_api_key_set: boolean;
+  anthropic_api_key_last4: string | null;
 }
 
 export interface AppConfigUpdate {
+  provider: LlmProvider;
   model: string;
   confidence_threshold: number;
   sovereign_cloud: boolean;
   use_local_llm: boolean;
   gemini_api_key?: string;
+  openai_api_key?: string;
+  anthropic_api_key?: string;
 }
 
 export interface LmStudioStatus {

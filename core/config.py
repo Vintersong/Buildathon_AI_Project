@@ -24,6 +24,10 @@ COMPLIANCE_LOG_PATH = LOGS_DIR / "compliance_log.jsonl"
 ERROR_LOG_PATH = LOGS_DIR / "error_log.jsonl"
 AUDIT_LOG_PATH = LOGS_DIR / "audit_log.jsonl"
 
+# Append-only audit/event feed surfaced by GET /api/audit, plus the error log.
+EVENTS_LOG_PATH = LOGS_DIR / "events.jsonl"
+ERRORS_LOG_PATH = LOGS_DIR / "errors.jsonl"
+
 # ---------------------------------------------------------------------------
 # API key management (.secrets.json — gitignored)
 # ---------------------------------------------------------------------------
@@ -48,10 +52,91 @@ def _save_secrets(data: dict) -> None:
         tmp.replace(_SECRETS_PATH)
 
 
-def get_active_api_key() -> Optional[str]:
-    """Return the user-supplied key from .secrets.json, falling back to the env var."""
+# Supported LLM providers and where their keys live.
+PROVIDERS = ("gemini", "openai", "anthropic", "local")
+
+_SECRET_KEY_NAMES = {
+    "gemini": "gemini_api_key",
+    "openai": "openai_api_key",
+    "anthropic": "anthropic_api_key",
+}
+
+_ENV_KEY_NAMES = {
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+
+
+def get_provider_api_key(provider: str) -> Optional[str]:
+    """Return the active key for ``provider`` (.secrets.json, then env var)."""
+    if provider == "local":
+        return None  # local servers need no key
     secrets = _load_secrets()
-    return secrets.get("gemini_api_key") or GEMINI_API_KEY
+    name = _SECRET_KEY_NAMES.get(provider)
+    if name and secrets.get(name):
+        return secrets[name]
+    env_name = _ENV_KEY_NAMES.get(provider)
+    return os.getenv(env_name) if env_name else None
+
+
+def set_provider_api_key(provider: str, key: Optional[str]) -> None:
+    """Persist (or clear) the key for ``provider`` in .secrets.json."""
+    name = _SECRET_KEY_NAMES.get(provider)
+    if not name:
+        return
+    secrets = _load_secrets()
+    if key:
+        secrets[name] = key
+    else:
+        secrets.pop(name, None)
+    _save_secrets(secrets)
+
+
+def has_provider_api_key(provider: str) -> bool:
+    """True when a key for ``provider`` is available (stored or via env)."""
+    if provider == "local":
+        return False
+    secrets = _load_secrets()
+    name = _SECRET_KEY_NAMES.get(provider, "")
+    if secrets.get(name):
+        return True
+    env_name = _ENV_KEY_NAMES.get(provider, "")
+    return bool(env_name and os.getenv(env_name))
+
+
+def get_provider_api_key_last4(provider: str) -> Optional[str]:
+    key = get_provider_api_key(provider)
+    return key[-4:] if key and len(key) >= 4 else None
+
+
+def get_active_provider() -> str:
+    """Return the selected provider from config.json, defaulting to gemini.
+
+    Honours the legacy ``use_local_llm`` flag when ``provider`` is not set."""
+    config_path = PROJECT_ROOT / "config.json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        cfg = {}
+    provider = (cfg.get("provider") or "").strip().lower()
+    if provider in PROVIDERS:
+        return provider
+    if cfg.get("use_local_llm"):
+        return "local"
+    return "gemini"
+
+
+def get_active_api_key() -> Optional[str]:
+    """Return the user-supplied key from .secrets.json, falling back to the env var.
+
+    Back-compat shim: returns the key for the currently active provider
+    (Gemini when none selected)."""
+    provider = get_active_provider()
+    if provider == "local":
+        provider = "gemini"
+    return get_provider_api_key(provider)
 
 
 def get_active_api_key_last4() -> Optional[str]:

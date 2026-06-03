@@ -120,8 +120,88 @@ def resolve_case(
             for case in updated:
                 f.write(json.dumps(case) + "\n")
 
+    # Reconcile the underlying record with the resolution outcome.
+    if resolution == "purged":
+        _archive_purged_record(record_id, resolved_by)
+    elif not has_open_cases(record_id):
+        _clear_record_review_hold(record_id, resolved_by)
+
     return {"case_id": case_id, "status": "resolved", "resolution": resolution}
+
+
+def _archive_purged_record(record_id: str, reviewer: str) -> None:
+    """Archive a record whose review was resolved as 'purged' (GDPR removal)."""
+    from datetime import datetime, timezone
+    import uuid
+
+    record = load_record(record_id)
+    if not record:
+        return
+    record.state.archived = True
+    record.state.status = "archived"
+    record.compliance.human_review_required = False
+    now = datetime.now(timezone.utc).isoformat() + "Z"
+    record.updated_at = now
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "non_compliant_record_purged",
+        "timestamp": now,
+        "source": {"source_type": "review_queue"},
+        "actor": {"type": "human", "reviewer": reviewer},
+        "changes": [
+            {"operation": "replace", "path": "/state/archived", "value": True},
+            {"operation": "replace", "path": "/state/status", "value": "archived"},
+            {"operation": "replace", "path": "/compliance/human_review_required", "value": False},
+        ],
+        "review": {"required": False, "resolution": "purged"},
+    }
+    save_record(record_id, record, event=event)
 
 
 def get_review_cases_for_record(record_id: str) -> List[Dict[str, Any]]:
     return [c for c in get_all_review_cases() if c["record_id"] == record_id]
+
+
+# ---------------------------------------------------------------------------
+# Backwards-compatibility helpers (used by web/app.py)
+# ---------------------------------------------------------------------------
+
+def get_review_queue() -> List[Dict[str, Any]]:
+    """Return every review case (open + resolved). Legacy alias used by the API."""
+    return get_all_review_cases()
+
+
+def add_to_queue(cases: List[Dict[str, Any]]) -> None:
+    """Append one or more cases to the review queue (legacy list-based API)."""
+    for case in cases:
+        append_review_case(case)
+
+
+def has_open_cases(record_id: str) -> bool:
+    """True when the record has at least one open review case."""
+    return any(c.get("record_id") == record_id for c in get_open_review_cases())
+
+
+def _clear_record_review_hold(record_id: str, reviewer: str) -> None:
+    """Lift the human-review hold on a record once its cases are resolved."""
+    from datetime import datetime, timezone
+    import uuid
+
+    record = load_record(record_id)
+    if not record:
+        return
+    record.compliance.human_review_required = False
+    if record.state.status == "pending_review":
+        record.state.status = "reviewed"
+    now = datetime.now(timezone.utc).isoformat() + "Z"
+    record.updated_at = now
+    event = {
+        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+        "event_type": "human_review_resolved",
+        "timestamp": now,
+        "source": {"source_type": "review_queue"},
+        "actor": {"type": "human", "reviewer": reviewer},
+        "changes": [{"operation": "replace", "path": "/compliance/human_review_required", "value": False}],
+        "review": {"required": False},
+    }
+    save_record(record_id, record, event=event)

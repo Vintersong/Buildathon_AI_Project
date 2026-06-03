@@ -13,6 +13,7 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 const jsonBodyParser = express.json({ limit: "15mb" });
 const FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8080";
+const API_TOKEN = process.env.TALENT_POOL_API_TOKEN || process.env.APP_API_TOKEN || "";
 
 function parseLinkedInProfileName(linkedinUrl: string): string {
   const slug = linkedinUrl.replace(/\/$/, "").split("/").pop() || "";
@@ -26,9 +27,13 @@ function isLinkedInProfileUrl(linkedinUrl: string): boolean {
 
 async function forwardToFastAPI(req: express.Request, res: express.Response, apiPath: string) {
   try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (API_TOKEN) {
+      headers["X-API-Token"] = API_TOKEN;
+    }
     const backend = await fetch(`${FASTAPI_URL}${apiPath}`, {
       method: req.method,
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(req.body),
     });
     const payload = await backend.text();
@@ -85,6 +90,11 @@ app.use(
     changeOrigin: true,
     pathRewrite: { "^/": "/api/" },
     on: {
+      proxyReq: (proxyReq) => {
+        if (API_TOKEN) {
+          proxyReq.setHeader("X-API-Token", API_TOKEN);
+        }
+      },
       error: (_err: Error, _req: express.Request, res: express.Response) => {
         (res as express.Response).status(502).json({
           error: "FastAPI backend unavailable. Start it with: uvicorn web.app:app --port 8080",

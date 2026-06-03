@@ -13,6 +13,7 @@ import ast
 import csv
 import io
 import json
+import os
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -20,8 +21,20 @@ from typing import Any, Optional
 
 from .compliance import check_and_generate_review_cases
 from .config import RECORDS_DIR, REQUIREMENTS_DIR
+from .path_utils import resolve_json_path
 from .schemas import CandidateRecord, Compliance, Identity, Profile, Scores
 from .store import save_record
+from .time_utils import utc_now_iso
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return max(1, int(os.getenv(name, str(default))))
+    except ValueError:
+        return default
+
+
+_MAX_SPREADSHEET_ROWS = _int_env("MAX_SPREADSHEET_ROWS", 10000)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +180,7 @@ _JOB_COLUMNS = {
 def _norm_header(raw: Any) -> str:
     header = _normalise_cell(raw).strip()
     alias_key = header if header in _COLUMN_ALIASES else header.lower()
-    return _COLUMN_ALIASES.get(alias_key, header)
+    return _COLUMN_ALIASES.get(alias_key, header.lower())
 
 
 def _norm_headers(raw_headers: list[Any]) -> list[str]:
@@ -198,7 +211,12 @@ def _parse_csv_rows(content: bytes) -> tuple[list[str], list[dict[str, str]]]:
         headers = next(reader)
     except StopIteration:
         return [], []
-    rows = _rows_from_headers(headers, list(reader))
+    values: list[list[str]] = []
+    for row_num, row in enumerate(reader, start=1):
+        if row_num > _MAX_SPREADSHEET_ROWS:
+            raise ValueError(f"Spreadsheet row limit exceeded ({_MAX_SPREADSHEET_ROWS} rows max)")
+        values.append(row)
+    rows = _rows_from_headers(headers, values)
     return _norm_headers(headers), rows
 
 
@@ -218,7 +236,11 @@ def _parse_excel_rows(content: bytes) -> tuple[list[str], list[dict[str, str]]]:
     else:
         return [], []
 
-    values = [list(row) for row in rows_iter]
+    values = []
+    for row_num, row in enumerate(rows_iter, start=1):
+        if row_num > _MAX_SPREADSHEET_ROWS:
+            raise ValueError(f"Spreadsheet row limit exceeded ({_MAX_SPREADSHEET_ROWS} rows max)")
+        values.append(list(row))
     return _norm_headers(headers), _rows_from_headers(headers, values)
 
 
@@ -285,10 +307,10 @@ def _row_to_candidate(row: dict[str, str], row_num: int) -> tuple[str, Candidate
     seniority = _parse_seniority(positions, yoe)
     all_skills = list(dict.fromkeys(skills + certs + related_skills))
 
-    filled = sum([bool(primary_name), bool(career_objective), bool(all_skills), bool(previous_jobs), bool(study_degrees), bool(yoe)])
+    filled = sum([bool(primary_name), bool(career_objective), bool(all_skills), bool(previous_jobs), bool(study_degrees), yoe is not None])
     confidence = round(min(0.40 + filled * 0.09, 0.90), 2)
 
-    now = datetime.utcnow().isoformat() + "Z"
+    now = utc_now_iso()
     record_id = f"cand_{uuid.uuid4().hex[:12]}"
     retention_until = (datetime.now(timezone.utc) + timedelta(days=730)).isoformat()
 
@@ -369,7 +391,7 @@ def _row_to_job(row: dict[str, str]) -> Optional[dict[str, Any]]:
         )
         if part
     ]
-    now = datetime.utcnow().isoformat() + "Z"
+    now = utc_now_iso()
     req_id = f"req_{uuid.uuid4().hex[:12]}"
     return {
         "id": req_id,
@@ -395,7 +417,7 @@ def _row_to_job(row: dict[str, str]) -> Optional[dict[str, Any]]:
 
 def _save_job_requirement(job: dict[str, Any]) -> None:
     REQUIREMENTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = REQUIREMENTS_DIR / f"{job['id']}.json"
+    path = resolve_json_path(REQUIREMENTS_DIR, job["id"], kind="job")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(job, f, indent=2)
 
@@ -462,7 +484,7 @@ class CSVIngestProgress:
         self.jobs_created = 0
         self.errors: list[dict[str, Any]] = []
         self.done = False
-        self.started_at = datetime.utcnow().isoformat() + "Z"
+        self.started_at = utc_now_iso()
         self.finished_at: Optional[str] = None
 
     def add_error(self, row: int, error: str) -> None:
@@ -486,7 +508,7 @@ class CSVIngestProgress:
 
 def _finish(progress: CSVIngestProgress) -> None:
     progress.done = True
-    progress.finished_at = datetime.utcnow().isoformat() + "Z"
+    progress.finished_at = utc_now_iso()
 
 
 def stream_ingest_file(content: bytes, filename: str, progress: CSVIngestProgress) -> None:

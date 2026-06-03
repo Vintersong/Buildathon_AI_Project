@@ -24,8 +24,7 @@ with tempfile.TemporaryDirectory() as tmp:
          patch.object(store, "log_event"), \
          patch.object(csv_ingest, "RECORDS_DIR", records), \
          patch.object(csv_ingest, "REQUIREMENTS_DIR", requirements), \
-         patch.object(csv_ingest, "evaluate_compliance", return_value=[]), \
-         patch.object(csv_ingest, "add_to_queue"):
+         patch.object(csv_ingest, "check_and_generate_review_cases", return_value=[]):
         prog = CSVIngestProgress()
         stream_ingest_file(csv_content, "test.csv", prog)
 
@@ -73,8 +72,7 @@ with tempfile.TemporaryDirectory() as tmp:
          patch.object(store, "log_event"), \
          patch.object(csv_ingest, "RECORDS_DIR", records), \
          patch.object(csv_ingest, "REQUIREMENTS_DIR", requirements), \
-         patch.object(csv_ingest, "evaluate_compliance", return_value=[]), \
-         patch.object(csv_ingest, "add_to_queue"):
+         patch.object(csv_ingest, "check_and_generate_review_cases", return_value=[]):
         prog3 = CSVIngestProgress()
         stream_ingest_file(payload.getvalue(), "bulk.xlsx", prog3)
 
@@ -107,8 +105,7 @@ if real_csv.exists():
              patch.object(store, "log_event"), \
              patch.object(csv_ingest, "RECORDS_DIR", records), \
              patch.object(csv_ingest, "REQUIREMENTS_DIR", requirements), \
-             patch.object(csv_ingest, "evaluate_compliance", return_value=[]), \
-             patch.object(csv_ingest, "add_to_queue"):
+             patch.object(csv_ingest, "check_and_generate_review_cases", return_value=[]):
             prog4 = CSVIngestProgress()
             stream_ingest_file(real_csv.read_bytes(), real_csv.name, prog4)
 

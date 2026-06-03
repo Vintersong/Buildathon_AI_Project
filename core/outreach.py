@@ -1,6 +1,5 @@
 import json
 import uuid
-from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from .config import (
@@ -9,8 +8,10 @@ from .config import (
     LOGS_DIR,
     get_active_provider,
 )
+from .path_utils import resolve_json_path
 from .schemas import CandidateRecord
 from .store import load_record, save_record
+from .time_utils import utc_now_iso
 
 OUTREACH_LOG_PATH = LOGS_DIR / "outreach_log.jsonl"
 
@@ -63,7 +64,7 @@ def draft_outreach_email(
 
     event = {
         "event": "outreach_drafted",
-        "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+        "timestamp": utc_now_iso(),
         "job_title": job_title,
         "company_name": company_name,
         "method": method,
@@ -80,7 +81,7 @@ def draft_outreach_email(
 
 def _load_job(job_id: str) -> dict:
     """Load a requirement record as a raw dict."""
-    path = REQUIREMENTS_DIR / f"{job_id}.json"
+    path = resolve_json_path(REQUIREMENTS_DIR, job_id, kind="job")
     if not path.exists():
         raise ValueError(f"Job {job_id} not found")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -163,7 +164,7 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
         "record_id": candidate_id,
         "job_id": job_id,
         "reason": "outreach_draft_review",
-        "created_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "created_at": utc_now_iso(),
         "status": "open",
         "draft_text": draft_text,
         "model_used": llm.active_model() if generation_mode != "template" else "local_template_v1",
@@ -176,7 +177,7 @@ def generate_draft(candidate_id: str, job_id: str) -> str:
 def _log_outreach(record_id: str, job_title: str, company_name: str, method: str) -> None:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+        "timestamp": utc_now_iso(),
         "record_id": record_id,
         "job_title": job_title,
         "company_name": company_name,

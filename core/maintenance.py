@@ -8,6 +8,7 @@ from .events import log_error
 from .config import RECORDS_DIR, STALE_REFRESH_MONTHS, get_confidence_threshold
 from .compliance import check_and_generate_review_cases
 from .schemas import CandidateRecord
+from .time_utils import utc_now_iso
 
 
 def _months_since(iso_date: str) -> float:
@@ -80,7 +81,7 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
         try:
             extraction, model_info = extract_candidate_data(raw_text)
 
-            now = datetime.now(timezone.utc).isoformat() + "Z"
+            now = utc_now_iso()
             record.updated_at = now
             record.state.last_refreshed_at = now
 
@@ -141,7 +142,7 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
             error_msg = str(e)
             results["errors"].append({"record_id": record_id, "error": error_msg})
             log_error({
-                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+                "timestamp": utc_now_iso(),
                 "stage": "bulk_refresh",
                 "record_id": record_id,
                 "error_type": "RefreshFailed",

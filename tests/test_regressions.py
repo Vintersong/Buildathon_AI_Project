@@ -239,6 +239,22 @@ class RegressionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             match.generate_shortlist("../secret")
 
+    def test_delete_job_rejects_traversal_id(self):
+        import web.app as web_app
+
+        with self.assertRaises(Exception) as ctx:
+            asyncio.run(web_app.delete_job("..\\config"))
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 400)
+
+    def test_api_token_is_enforced_when_configured(self):
+        from fastapi.testclient import TestClient
+        import web.app as web_app
+
+        client = TestClient(web_app.app)
+        with patch.dict("os.environ", {"TALENT_POOL_API_TOKEN": "test-token"}):
+            self.assertEqual(client.get("/api/config").status_code, 401)
+            self.assertEqual(client.get("/api/config", headers={"X-API-Token": "test-token"}).status_code, 200)
+
     def test_data_region_none_is_not_region_violation(self):
         from core import compliance, review
 
@@ -458,6 +474,36 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("Hi Ada Lovelace", captured_cases[0]["draft_text"])
         self.assertNotIn("CANDIDATE_001", captured_cases[0]["draft_text"])
 
+    def test_agent_chat_prompt_uses_pii_minimized_candidate_context(self):
+        import web.app as web_app
+        from core import llm
+
+        record = make_record()
+        record.identity.emails = ["ada@example.com"]
+        record.identity.phones = ["+40 722 111 222"]
+        record.identity.linkedin_url = "https://linkedin.com/in/ada"
+        record.profile.summary = "Ada Lovelace built private ML systems."
+        capture = CaptureLLM("Candidate cand_test has Python experience.")
+
+        body = web_app._GeminiChatBody(
+            messages=[web_app._ChatMessage(role="user", content="Which candidates know Python?")],
+            context={"candidates": [], "jobs": [], "reviewTasks": []},
+        )
+
+        with patch.object(web_app, "_candidate_record_ids", return_value=["cand_test"]), \
+            patch.object(web_app, "load_record", return_value=record), \
+            patch.object(llm, "llm_available", return_value=True), \
+            patch.object(llm, "complete", capture):
+            asyncio.run(web_app.gemini_chat(body))
+
+        prompt = capture.last_prompt
+        self.assertIn("cand_test", prompt)
+        self.assertIn("CANDIDATE_001", prompt)
+        self.assertNotIn("Ada Lovelace", prompt)
+        self.assertNotIn("ada@example.com", prompt)
+        self.assertNotIn("+40 722 111 222", prompt)
+        self.assertNotIn("linkedin.com/in/ada", prompt)
+
     def test_legacy_candidates_page_route_is_removed(self):
         import web.app as web_app
 
@@ -477,6 +523,35 @@ class RegressionTests(unittest.TestCase):
         self.assertTrue(progress.done)
         self.assertEqual(progress.failed, 1)
         self.assertIn("No recognized candidate or job columns", progress.errors[0]["error"])
+
+    def test_spreadsheet_header_fallback_is_lowercase(self):
+        from core import csv_ingest
+
+        self.assertEqual(csv_ingest._norm_header("Skills"), "skills")
+        self.assertEqual(csv_ingest._norm_header("Positions"), "positions")
+        self.assertEqual(csv_ingest._norm_header("Custom_Header"), "custom_header")
+
+    def test_utc_now_iso_is_parseable_zulu_time(self):
+        from datetime import datetime
+        from core.time_utils import utc_now_iso
+
+        value = utc_now_iso()
+        self.assertTrue(value.endswith("Z"))
+        self.assertNotIn("+00:00Z", value)
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    def test_spreadsheet_import_enforces_row_limit(self):
+        from core import csv_ingest
+        from core.csv_ingest import CSVIngestProgress, stream_ingest_file
+
+        progress = CSVIngestProgress()
+        payload = b"candidate_name,skills\nAda,Python\nGrace,COBOL\n"
+        with patch.object(csv_ingest, "_MAX_SPREADSHEET_ROWS", 1):
+            stream_ingest_file(payload, "bulk.csv", progress)
+
+        self.assertTrue(progress.done)
+        self.assertEqual(progress.failed, 1)
+        self.assertIn("row limit exceeded", progress.errors[0]["error"])
 
     def test_spreadsheet_imports_excel_candidate_job_and_review_case(self):
         from core import csv_ingest, store

@@ -6,19 +6,19 @@ from filelock import FileLock
 from .config import LOGS_DIR, RECORDS_DIR
 from .store import load_record, save_record
 from .schemas import CandidateRecord
+from .time_utils import utc_now_iso
 
 REVIEW_QUEUE_PATH = LOGS_DIR / "review_queue.jsonl"
 
 
 def _create_case(record_id: str, reason: str) -> Dict[str, Any]:
-    from datetime import datetime, timezone
     import uuid
     return {
         "case_id": f"rv_{uuid.uuid4().hex[:10]}",
         "record_id": record_id,
         "reason": reason,
         "status": "open",
-        "created_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "created_at": utc_now_iso(),
         "resolved_at": None,
         "resolved_by": None,
         "notes": None,
@@ -80,8 +80,6 @@ def resolve_case(
     record (since the record will be deleted). For all other resolutions, only
     the targeted case is resolved.
     """
-    from datetime import datetime, timezone
-
     if not REVIEW_QUEUE_PATH.exists():
         return {"error": "Review queue not found"}
 
@@ -90,7 +88,7 @@ def resolve_case(
     if not target:
         return {"error": f"Case {case_id} not found"}
 
-    now = datetime.now(timezone.utc).isoformat() + "Z"
+    now = utc_now_iso()
     record_id = target["record_id"]
     updated = []
 
@@ -131,7 +129,6 @@ def resolve_case(
 
 def _archive_purged_record(record_id: str, reviewer: str) -> None:
     """Archive a record whose review was resolved as 'purged' (GDPR removal)."""
-    from datetime import datetime, timezone
     import uuid
 
     record = load_record(record_id)
@@ -140,7 +137,7 @@ def _archive_purged_record(record_id: str, reviewer: str) -> None:
     record.state.archived = True
     record.state.status = "archived"
     record.compliance.human_review_required = False
-    now = datetime.now(timezone.utc).isoformat() + "Z"
+    now = utc_now_iso()
     record.updated_at = now
     event = {
         "event_id": f"evt_{uuid.uuid4().hex[:12]}",
@@ -184,7 +181,6 @@ def has_open_cases(record_id: str) -> bool:
 
 def _clear_record_review_hold(record_id: str, reviewer: str) -> None:
     """Lift the human-review hold on a record once its cases are resolved."""
-    from datetime import datetime, timezone
     import uuid
 
     record = load_record(record_id)
@@ -193,7 +189,7 @@ def _clear_record_review_hold(record_id: str, reviewer: str) -> None:
     record.compliance.human_review_required = False
     if record.state.status == "pending_review":
         record.state.status = "reviewed"
-    now = datetime.now(timezone.utc).isoformat() + "Z"
+    now = utc_now_iso()
     record.updated_at = now
     event = {
         "event_id": f"evt_{uuid.uuid4().hex[:12]}",

@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 
 from .config import COMPLIANCE_LOG_PATH, LOGS_DIR, get_confidence_threshold
 from .schemas import CandidateRecord
+from .time_utils import utc_now_iso
 
 
 def log_compliance(event: Dict[str, Any]) -> None:
@@ -76,7 +77,7 @@ def check_and_generate_review_cases(
 
     if review_cases:
         log_compliance({
-            "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
+            "timestamp": utc_now_iso(),
             "record_id": record_id,
             "cases_generated": len(review_cases),
             "reasons": [c["reason"] for c in review_cases]
@@ -94,7 +95,7 @@ def _create_case(record_id: str, reason: str) -> Dict[str, Any]:
         "record_id": record_id,
         "reason": reason,
         "status": "open",
-        "created_at": datetime.now(timezone.utc).isoformat() + "Z",
+        "created_at": utc_now_iso(),
         "resolved_at": None,
         "resolved_by": None,
         "notes": None,

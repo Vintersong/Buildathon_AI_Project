@@ -2,7 +2,6 @@ import json
 import os
 from pathlib import Path
 from typing import List, Dict, Any
-from datetime import datetime
 import google.generativeai as genai
 
 from .config import (
@@ -14,8 +13,10 @@ from .config import (
     get_use_local_llm,
     ENABLE_EXTERNAL_LLM,
 )
+from .path_utils import resolve_json_path
 from .schemas import CandidateRecord, RequirementRecord
 from .store import load_record
+from .time_utils import utc_now_iso
 from .math_utils import get_embedding, cosine_similarity, calculate_keyword_overlap
 
 # When sentence-transformers is not installed, fall back to keyword overlap so
@@ -338,11 +339,7 @@ def generate_shortlist(
         )
         funnel_size = top_n
 
-    # Reject path-traversal attempts before touching the filesystem.
-    if "/" in req_id or "\\" in req_id or ".." in req_id:
-        raise ValueError(f"Invalid requirement id: {req_id}")
-
-    req_path = REQUIREMENTS_DIR / f"{req_id}.json"
+    req_path = resolve_json_path(REQUIREMENTS_DIR, req_id, kind="requirement")
     if not req_path.exists():
         raise ValueError(f"Requirement {req_id} not found")
 
@@ -463,7 +460,7 @@ def generate_shortlist(
 
     # Persist shortlist back to the requirement file
     req_data["shortlist"] = results
-    req_data["shortlist_generated_at"] = datetime.utcnow().isoformat() + "Z"
+    req_data["shortlist_generated_at"] = utc_now_iso()
     req_path.write_text(json.dumps(req_data, indent=2), encoding="utf-8")
 
     return {

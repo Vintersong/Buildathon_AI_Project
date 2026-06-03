@@ -23,11 +23,13 @@ from core.config import (
     REQUIREMENTS_DIR,
     RECORD_INDEX_PATH,
     INTAKE_DIR,
-    get_active_api_key_last4,
+    PROVIDERS,
     get_active_model,
+    get_active_provider,
     get_use_local_llm,
-    has_user_api_key,
-    set_active_api_key,
+    get_provider_api_key_last4,
+    has_provider_api_key,
+    set_provider_api_key,
 )
 from core.ingest import ingest_file
 from core.review import get_review_queue, resolve_case, has_open_cases, _clear_record_review_hold
@@ -57,9 +59,10 @@ CONFIG_PATH = project_root / "config.json"
 class AppConfig(BaseModel):
     """Persisted app config (committed to config.json).
 
-    The Gemini API key lives in .secrets.json (gitignored) and is never
+    Provider API keys live in .secrets.json (gitignored) and are never
     serialized here. Use AppConfigResponse / AppConfigUpdate for transport.
     """
+    provider: str = Field(default="gemini")
     model: str = Field(default="gemini-2.5-flash")
     confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     sovereign_cloud: bool = Field(default=False)
@@ -67,19 +70,23 @@ class AppConfig(BaseModel):
 
 
 class AppConfigResponse(AppConfig):
-    """Read shape - exposes whether a user key is set and its last-4 only."""
+    """Read shape - exposes which provider keys are set and their last-4 only."""
     gemini_api_key_set: bool = False
     gemini_api_key_last4: Optional[str] = None
+    openai_api_key_set: bool = False
+    openai_api_key_last4: Optional[str] = None
+    anthropic_api_key_set: bool = False
+    anthropic_api_key_last4: Optional[str] = None
 
 
 class AppConfigUpdate(AppConfig):
-    """Write shape - optional plaintext key.
+    """Write shape - optional plaintext keys per provider.
 
-    - None  → leave key as-is
-    - ""    → clear the stored key
-    - other → save as the new active key
+    For each key field: None → leave as-is, "" → clear, other → save.
     """
     gemini_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
 
 
 def load_app_config() -> AppConfig:
@@ -105,8 +112,12 @@ def _config_response() -> AppConfigResponse:
     base = load_app_config()
     return AppConfigResponse(
         **base.model_dump(),
-        gemini_api_key_set=has_user_api_key(),
-        gemini_api_key_last4=get_active_api_key_last4() if has_user_api_key() else None,
+        gemini_api_key_set=has_provider_api_key("gemini"),
+        gemini_api_key_last4=get_provider_api_key_last4("gemini"),
+        openai_api_key_set=has_provider_api_key("openai"),
+        openai_api_key_last4=get_provider_api_key_last4("openai"),
+        anthropic_api_key_set=has_provider_api_key("anthropic"),
+        anthropic_api_key_last4=get_provider_api_key_last4("anthropic"),
     )
 
 
@@ -130,10 +141,19 @@ async def lm_studio_status():
 
 @app.post("/api/config", response_model=AppConfigResponse)
 async def post_config(body: AppConfigUpdate):
+    key_fields = {"gemini_api_key", "openai_api_key", "anthropic_api_key"}
+    cfg = AppConfig(**body.model_dump(exclude=key_fields))
+    if cfg.provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: '{cfg.provider}'")
     try:
-        save_app_config(AppConfig(**body.model_dump(exclude={"gemini_api_key"})))
-        if body.gemini_api_key is not None:
-            set_active_api_key(body.gemini_api_key.strip() or None)
+        save_app_config(cfg)
+        for provider, value in (
+            ("gemini", body.gemini_api_key),
+            ("openai", body.openai_api_key),
+            ("anthropic", body.anthropic_api_key),
+        ):
+            if value is not None:
+                set_provider_api_key(provider, value.strip() or None)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
     return _config_response()
@@ -852,16 +872,16 @@ async def run_shortlist(req_id: str):
         raise HTTPException(status_code=422, detail=str(e))
 
     shortlist = []
-    for item in result.get("shortlist", []):
+    for item in result.get("results", []):
         rec_id = item.get("record_id", "")
-        rec = load_record(rec_id)
-        name = rec.identity.primary_name if rec else rec_id
+        name = item.get("name") or rec_id
+        confidence = item.get("llm_score", item.get("combined_score", 0.0))
         shortlist.append({
             "id": rec_id,
             "name": name,
-            "confidence": item.get("match_score", 0.0),
+            "confidence": confidence,
             "explanation": "; ".join(item.get("evidence", [])),
-            "status": "pending_review" if item.get("review_required") else "active",
+            "status": "active",
             "initials": _initials(name),
         })
     return shortlist
@@ -885,7 +905,7 @@ class ResolveBody(BaseModel):
 @app.post("/api/review/{case_id}/resolve")
 async def resolve_review_task(case_id: str, body: ResolveBody):
     try:
-        resolve_case(case_id, body.resolution, body.reviewer)
+        resolve_case(case_id, resolved_by=body.reviewer, resolution=body.resolution)
     except Exception as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"ok": True}
@@ -1002,7 +1022,8 @@ async def list_stale_candidates(months: int = 6):
 
 @app.get("/api/audit")
 async def list_audit_events():
-    events_path = project_root / "logs" / "events.jsonl"
+    from core.config import EVENTS_LOG_PATH
+    events_path = EVENTS_LOG_PATH
     if not events_path.exists():
         return []
     events = []
@@ -1106,10 +1127,8 @@ async def gemini_chat(body: _GeminiChatBody):
 
     response_text = ""
 
-    from core.extract import _configure_genai, _lm_studio_available, _lm_studio_chat
-    local_requested = get_use_local_llm()
-    use_lm_studio = local_requested and _lm_studio_available()
-    llm_ok = use_lm_studio or ((not local_requested) and _configure_genai())
+    from core import llm
+    llm_ok = llm.llm_available()
 
     full_records: list[dict] = []
     for record_id in _candidate_record_ids():
@@ -1136,23 +1155,10 @@ async def gemini_chat(body: _GeminiChatBody):
         )
 
         try:
-            if use_lm_studio:
-                lm_messages = [{"role": "system", "content": system_prompt}]
-                for msg in messages:
-                    lm_messages.append({"role": msg["role"], "content": msg["content"]})
-                response_text = _lm_studio_chat(lm_messages)
-            else:
-                import google.generativeai as genai_module
-                history = []
-                for msg in messages[:-1]:
-                    history.append({"role": "user" if msg["role"] == "user" else "model", "parts": [{"text": msg["content"]}]})
-                model = genai_module.GenerativeModel(
-                    model_name=get_active_model("gemini-2.5-flash"),
-                    system_instruction=system_prompt,
-                )
-                chat_session = model.start_chat(history=history)
-                resp = chat_session.send_message(last_user_msg)
-                response_text = resp.text
+            chat_messages = [{"role": "system", "content": system_prompt}]
+            for msg in messages:
+                chat_messages.append({"role": msg["role"], "content": msg["content"]})
+            response_text = llm.complete(chat_messages, json_mode=False)
 
             action_m = re.search(r'\[ACTION:CREATE_JOB\]\s*(\{[^\n]+\})', response_text)
             if action_m:

@@ -1,11 +1,15 @@
 # Buildathon AI Project
 
-This repository contains an experimental AI application with a Python backend (`core/`, `tools/`, `requirements/`) and a separate UI layer (`ui/`, `web/`). It is designed so you can either:
+This repository contains an experimental AI application with a Python backend (`core/`, `tools/`, `requirements/`) and a separate UI layer (`ui/`, `web/`). **Bring your own key for whatever agent you want** — pick a provider in the in-app **Settings** page and paste your API key. Supported providers:
 
-- Run the system against a **local model** using **LM Studio**, or  
-- Run it against a **hosted model API** using an **API key** configured in `config.json` and environment variables.
+- **Anthropic (Claude)** — set an Anthropic API key
+- **OpenAI (GPT)** — set an OpenAI API key
+- **Google Gemini** — set a Gemini API key
+- **Local / OpenAI-compatible** — a local model via **LM Studio**, Ollama, or any OpenAI-compatible server (no key required)
 
-The sections below walk through installation, running the project, and configuring model access in both modes.
+Keys are stored locally in `.secrets.json` (gitignored) and never committed. With no key configured the app still runs using built-in heuristic extraction and template outreach, so you can explore the UI before adding a provider.
+
+The sections below walk through installation, running the project, and configuring model access.
 
 ---
 
@@ -141,57 +145,60 @@ Once the backend is running all model calls go to LM Studio’s local server wit
 
 ---
 
-## 5. Using a Gemini API key (no LM Studio required)
+## 5. Using a hosted provider (Anthropic / OpenAI / Gemini)
 
-Instead of LM Studio you can use Google Gemini via an API key.
+Instead of a local model you can use any hosted provider via an API key. The flow is the same for all of them — only the key and model name differ.
 
-### 5.1 Get a Gemini API key
+### 5.1 Get an API key
 
-1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey) and create a key.
-2. **Never commit this key** to version control — the project keeps it out of `config.json` automatically.
+| Provider | Where to get a key | Example model |
+|----------|--------------------|---------------|
+| Anthropic (Claude) | [console.anthropic.com](https://console.anthropic.com/) | `claude-sonnet-4-6` |
+| OpenAI (GPT) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | `gpt-4o-mini` |
+| Google Gemini | [Google AI Studio](https://aistudio.google.com/app/apikey) | `gemini-2.5-flash` |
 
-### 5.2 Set the key
+**Never commit your key** — the project keeps it out of `config.json` automatically and stores it in the gitignored `.secrets.json`.
+
+### 5.2 Choose a provider and set the key
 
 **Option A — Settings UI (recommended):**
 
-1. Start the backend (see section 4.3).
-2. Open `http://127.0.0.1:8080` → **Settings**.
-3. Paste the key into the **Gemini API key** field and save.
+1. Start the backend (see section 4.3) and open `http://127.0.0.1:8080` → **Settings**.
+2. Pick your provider from the **Provider** dropdown (the model name defaults sensibly; adjust if needed).
+3. Paste the key for that provider and click **Save**. It takes effect immediately — no restart.
 
-The key is stored in `.secrets.json` at the project root (gitignored) and takes effect immediately without a restart.
+Keys are stored per-provider in `.secrets.json`, so you can keep several configured and switch the dropdown at will.
 
 **Option B — environment variable:**
 
-On Linux / macOS:
 ```bash
-export GEMINI_API_KEY="your-key-here"
+export ANTHROPIC_API_KEY="your-key-here"   # or OPENAI_API_KEY / GEMINI_API_KEY
 ```
-
-On Windows (PowerShell):
 ```powershell
-$env:GEMINI_API_KEY="your-key-here"
+$env:ANTHROPIC_API_KEY="your-key-here"     # Windows PowerShell
 ```
 
-### 5.3 Switch to Gemini in `config.json`
+### 5.3 Provider selection in `config.json`
 
 ```json
 {
-  "model": "gemini-2.5-flash",
+  "provider": "anthropic",
+  "model": "claude-sonnet-4-6",
   "confidence_threshold": 0.85,
   "sovereign_cloud": false,
   "use_local_llm": false
 }
 ```
 
-The key change is `"use_local_llm": false` — that routes all model calls through Gemini instead of LM Studio.
+`provider` selects the backend (`gemini` | `openai` | `anthropic` | `local`) and `model` is the model name for that provider. The Settings UI writes both fields for you.
 
-### 5.4 Run the backend with Gemini
+### 5.4 Run the backend
 
 ```bash
 python -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload
 ```
 
-Requests will now go to Gemini instead of LM Studio.
+All model calls now route to your selected provider.
 
 ---
 
@@ -230,16 +237,18 @@ Open `http://localhost:5173` — it proxies API calls to the backend on port 808
 
 ---
 
-## 7. Switching between LM Studio and Gemini
+## 7. Switching providers
 
-The only field that controls which backend is used is `use_local_llm` in `config.json`:
+The `provider` field in `config.json` controls which backend is used:
 
-| Mode | `use_local_llm` | Requires |
-|---|---|---|
-| LM Studio | `true` | LM Studio running on port 1234 |
-| Gemini | `false` | `GEMINI_API_KEY` env var or key set in Settings UI |
+| `provider` | Requires |
+|---|---|
+| `anthropic` | Anthropic API key (env var or Settings UI) |
+| `openai` | OpenAI API key (env var or Settings UI) |
+| `gemini` | Gemini API key (env var or Settings UI) |
+| `local` | a local OpenAI-compatible server (e.g. LM Studio on port 1234) |
 
-You can also toggle this from the **Settings** page in the UI without editing the file manually.
+The easiest way to switch is the **Provider** dropdown on the **Settings** page in the UI — no file editing required. (`use_local_llm: true` is still honoured as a legacy shortcut for `provider: local`.)
 
 ---
 

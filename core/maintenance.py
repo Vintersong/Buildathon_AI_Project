@@ -6,18 +6,61 @@ from .store import load_record, save_record
 from .extract import extract_candidate_data
 from .events import log_error
 from .config import RECORDS_DIR, STALE_REFRESH_MONTHS, get_confidence_threshold
-from .compliance import evaluate_compliance
-from .review import add_to_queue
+from .compliance import check_and_generate_review_cases
+from .schemas import CandidateRecord
+
+
+def _months_since(iso_date: str) -> float:
+    """Return the number of months between now and the given ISO timestamp."""
+    try:
+        dt = datetime.fromisoformat(iso_date.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - dt
+        return delta.days / 30.44
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def flag_stale_records(stale_months: int = STALE_REFRESH_MONTHS) -> List[Dict[str, Any]]:
+    """
+    Scan all candidate records and return a list of records that haven't been
+    updated in more than `stale_months` months.
+    """
+    if not RECORDS_DIR.exists():
+        return []
+
+    stale = []
+    for path in RECORDS_DIR.glob("*.json"):
+        record_id = path.stem
+        try:
+            record = load_record(record_id)
+        except Exception:
+            continue
+
+        if record.state and record.state.archived:
+            continue
+
+        months_old = _months_since(record.updated_at or record.created_at)
+        if months_old >= stale_months:
+            stale.append({
+                "record_id": record_id,
+                "name": record.identity.primary_name or "Unknown",
+                "updated_at": record.updated_at,
+                "months_since_update": round(months_old, 1),
+            })
+
+    stale.sort(key=lambda r: r["months_since_update"], reverse=True)
+    return stale
 
 
 def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
     """
     Process a batch of candidate updates (simulating LinkedIn data pulls).
-    `updates` is a list of dicts with 'record_id' and 'raw_text'.
-    After updating each record, runs a compliance check and queues any
-    violations for human review.
+    `updates` is a list of dicts with 'record_id' and 'raw_text'. After updating
+    each record this re-runs the compliance check, queueing any violations for
+    human review. New skills / previous jobs are merged in without reordering or
+    duplicating existing entries.
     """
-    results = {"success": 0, "failed": 0, "errors": []}
+    results: Dict[str, Any] = {"success": 0, "failed": 0, "errors": []}
 
     for update in updates:
         record_id = update.get("record_id")
@@ -37,7 +80,7 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
         try:
             extraction, model_info = extract_candidate_data(raw_text)
 
-            now = datetime.utcnow().isoformat() + "Z"
+            now = datetime.now(timezone.utc).isoformat() + "Z"
             record.updated_at = now
             record.state.last_refreshed_at = now
 
@@ -60,7 +103,6 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
 
             record.scores.extraction_confidence = extraction.extraction_confidence
 
-            # Reflect actual review state in the audit event, not a hardcoded False
             review_required = extraction.extraction_confidence < get_confidence_threshold()
             if review_required:
                 record.compliance.human_review_required = True
@@ -81,14 +123,11 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
 
             save_record(record_id, record, event=event)
 
-            # Run compliance check and queue violations for human review
             try:
-                cases = evaluate_compliance(record_id)
-                if cases:
-                    add_to_queue(cases)
+                check_and_generate_review_cases(record_id, record)
             except Exception as comp_err:
                 log_error({
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                    "timestamp": now,
                     "stage": "post_bulk_refresh_compliance",
                     "record_id": record_id,
                     "error_type": "ComplianceCheckFailed",
@@ -102,7 +141,7 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
             error_msg = str(e)
             results["errors"].append({"record_id": record_id, "error": error_msg})
             log_error({
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone.utc).isoformat() + "Z",
                 "stage": "bulk_refresh",
                 "record_id": record_id,
                 "error_type": "RefreshFailed",
@@ -114,25 +153,28 @@ def bulk_refresh(updates: List[Dict[str, str]]) -> Dict[str, Any]:
 
 def find_stale_candidates(months: int = STALE_REFRESH_MONTHS) -> List[str]:
     """
-    Return a list of record IDs that have not been refreshed within `months` months.
-    Uses last_refreshed_at if available, otherwise falls back to created_at.
+    Return record IDs not refreshed within `months` months. Uses
+    last_refreshed_at when available, else created_at.
     """
     cutoff = datetime.now(timezone.utc) - timedelta(days=months * 30)
-    stale = []
+    stale: List[str] = []
 
     if not RECORDS_DIR.exists():
         return stale
 
     for path in RECORDS_DIR.glob("*.json"):
         record_id = path.stem
-        rec = load_record(record_id)
+        try:
+            rec = load_record(record_id)
+        except Exception:
+            continue
         if not rec or rec.state.archived:
             continue
 
         last_updated_str = rec.state.last_refreshed_at or rec.created_at
         try:
             last_updated = datetime.fromisoformat(last_updated_str.replace("Z", "+00:00"))
-        except ValueError:
+        except (ValueError, AttributeError):
             continue
 
         if last_updated < cutoff:
@@ -141,38 +183,88 @@ def find_stale_candidates(months: int = STALE_REFRESH_MONTHS) -> List[str]:
     return stale
 
 
-def archive_expired_records() -> Dict[str, Any]:
+def archive_record(record_id: str, reason: str = "manual") -> Dict[str, Any]:
     """
-    Scan all records and archive those whose retention_until has passed.
-    Called by tools/retention_cli.py.
+    Mark a candidate record as archived. Archived records are excluded from
+    matching and compliance scans but are retained for audit purposes.
     """
-    from .review import _archive_record
+    record = load_record(record_id)
+    if record.state and record.state.archived:
+        return {"record_id": record_id, "status": "already_archived"}
 
-    results = {"archived": 0, "skipped": 0, "errors": []}
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).isoformat()
+    record.state.archived = True
+    record.state.archived_at = now
+    record.state.archived_reason = reason
+    record.updated_at = now
 
+    event = {
+        "timestamp": now,
+        "event": "record_archived",
+        "reason": reason,
+    }
+    save_record(record_id, record, event=event)
+    return {"record_id": record_id, "status": "archived", "archived_at": now}
+
+
+def restore_record(record_id: str) -> Dict[str, Any]:
+    """
+    Unarchive a previously archived record, returning it to active status.
+    """
+    record = load_record(record_id)
+    if not (record.state and record.state.archived):
+        return {"record_id": record_id, "status": "not_archived"}
+
+    now = datetime.now(timezone.utc).isoformat()
+    record.state.archived = False
+    record.state.archived_at = None
+    record.state.archived_reason = None
+    record.updated_at = now
+
+    event = {
+        "timestamp": now,
+        "event": "record_restored",
+    }
+    save_record(record_id, record, event=event)
+    return {"record_id": record_id, "status": "restored", "restored_at": now}
+
+
+def purge_expired_records() -> List[Dict[str, Any]]:
+    """
+    Permanently delete records whose `retention_until` date has passed.
+    This is a destructive operation - call only from scheduled GDPR maintenance jobs.
+    """
     if not RECORDS_DIR.exists():
-        return results
+        return []
+
+    purged = []
+    now = datetime.now(timezone.utc)
 
     for path in RECORDS_DIR.glob("*.json"):
         record_id = path.stem
         try:
-            rec = load_record(record_id)
-            if not rec or rec.state.archived:
-                results["skipped"] += 1
-                continue
+            record = load_record(record_id)
+        except Exception:
+            continue
 
-            if rec.compliance.retention_until:
-                retention_date = datetime.fromisoformat(
-                    rec.compliance.retention_until.replace("Z", "+00:00")
-                )
-                if now > retention_date:
-                    _archive_record(record_id, reviewer="system_retention_job", reason="retention_expired")
-                    results["archived"] += 1
-                    continue
+        retention = record.compliance.retention_until
+        if not retention:
+            continue
 
-            results["skipped"] += 1
-        except Exception as e:
-            results["errors"].append({"record_id": record_id, "error": str(e)})
+        try:
+            retention_dt = datetime.fromisoformat(retention.replace("Z", "+00:00"))
+        except ValueError:
+            continue
 
-    return results
+        if now >= retention_dt:
+            path.unlink(missing_ok=True)
+            lock_path = path.with_suffix(".json.lock")
+            lock_path.unlink(missing_ok=True)
+            purged.append({
+                "record_id": record_id,
+                "name": record.identity.primary_name or "Unknown",
+                "retention_until": retention,
+                "purged_at": now.isoformat(),
+            })
+
+    return purged

@@ -3,98 +3,60 @@ import hashlib
 import json
 import uuid
 from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Any
+from datetime import datetime, timezone
+from typing import Optional, List, Dict, Any
+
 from filelock import FileLock
+
+from .config import (
+    RECORDS_DIR,
+    INTAKE_DIR,
+    QUARANTINE_DIR,
+    INGEST_MANIFEST_PATH,
+    LOGS_DIR,
+    REQUIREMENTS_DIR,
+    get_confidence_threshold,
+)
+from .schemas import CandidateRecord, State, Compliance, Scores
+from .store import save_record, load_record, record_exists
+from .extract import extract_candidate_data
+from .dedup import find_existing_by_identity as find_duplicate
+from .compliance import check_and_generate_review_cases
+
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "10"))
+_OCR_MIN_CHARS_PER_PAGE = 50
+
 try:
     import fitz  # PyMuPDF
 except ImportError:
     fitz = None
 
-from .config import (
-    MANIFEST_PATH,
-    QUARANTINE_DIR,
-    INTAKE_DIR,
-    MAX_INGEST_FILE_BYTES,
-    MAX_PDF_PAGES,
-    get_confidence_threshold,
-)
-from .schemas import CandidateRecord, Identity, Profile, State, Compliance, Scores
-from .extract import extract_candidate_data
-from .store import load_record, save_record
-from .events import log_error
-from .dedup import find_existing_by_identity
-from .compliance import evaluate_compliance
-from .review import add_to_queue
-from .security import anonymize_candidate_text
-
-# Consent basis applied to newly ingested records.
-# "legitimate_interest" is the GDPR basis most appropriate for recruitment.
-# Override via DEFAULT_CONSENT_BASIS env var if your legal basis differs.
-DEFAULT_CONSENT_BASIS: str = os.getenv("DEFAULT_CONSENT_BASIS", "legitimate_interest")
-
-# OCR support — optional, gracefully degraded if tesseract is not installed
 try:
     import pytesseract
     from PIL import Image
+    import io
     _OCR_AVAILABLE = True
 except ImportError:
     _OCR_AVAILABLE = False
 
-_OCR_MIN_CHARS_PER_PAGE = 50  # pages with fewer chars are treated as image-based
 
-
-def compute_sha256(file_path: Path) -> str:
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-    return f"sha256:{sha256_hash.hexdigest()}"
-
-
-def check_manifest(file_hash: str) -> Optional[str]:
-    """Check if hash was already ingested. Returns record_id if it was."""
-    lock = FileLock(f"{MANIFEST_PATH}.lock")
-    with lock:
-        try:
-            with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-            return manifest.get(file_hash)
-        except (FileNotFoundError, json.JSONDecodeError):
-            return None
-
-
-def update_manifest(file_hash: str, record_id: str):
-    lock = FileLock(f"{MANIFEST_PATH}.lock")
-    with lock:
-        try:
-            with open(MANIFEST_PATH, "r", encoding="utf-8") as f:
-                manifest = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            manifest = {}
-
-        manifest[file_hash] = record_id
-
-        with open(MANIFEST_PATH, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
+def log_error(event: dict):
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    with open(LOGS_DIR / "error_log.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(event) + "\n")
 
 
 def _ocr_page(page) -> str:
-    """Render a PDF page to an image and run Tesseract OCR on it."""
-    pix = page.get_pixmap(dpi=200)
-    img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+    if not _OCR_AVAILABLE:
+        return ""
+    mat = fitz.Matrix(2, 2)
+    pix = page.get_pixmap(matrix=mat)
+    img_data = pix.tobytes("png")
+    img = Image.open(io.BytesIO(img_data))
     return pytesseract.image_to_string(img)
 
 
-def extract_text_from_file(file_path: Path) -> str:
-    """Extract text from supported file types, with OCR fallback for image-based PDFs."""
-    size = file_path.stat().st_size
-    if size > MAX_INGEST_FILE_BYTES:
-        raise ValueError(
-            f"File exceeds maximum allowed size of {MAX_INGEST_FILE_BYTES} bytes "
-            f"(got {size} bytes). Adjust MAX_INGEST_FILE_BYTES env var to raise the limit."
-        )
-
+def _read_file(file_path: Path) -> str:
     ext = file_path.suffix.lower()
     if ext == ".pdf":
         if fitz is None:
@@ -168,170 +130,183 @@ def _merge_record(record: CandidateRecord, extraction, now: str) -> list[dict]:
         existing = existing or []
         incoming = incoming or []
         merged = list(dict.fromkeys(existing + incoming))
-        added = [x for x in incoming if x not in set(existing)]
-        if added:
-            changes.append({"operation": "union", "path": path, "added": added})
+        if merged != existing:
+            changes.append({"operation": "union", "path": path, "added": [x for x in incoming if x not in existing]})
         return merged
 
     record.profile.technologies_used = _union(
-        record.profile.technologies_used, extraction.technologies_used, "/profile/technologies_used")
-    record.profile.study_degrees = _union(
-        record.profile.study_degrees, extraction.study_degrees, "/profile/study_degrees")
-    record.profile.languages_spoken = _union(
-        record.profile.languages_spoken, extraction.languages_spoken, "/profile/languages_spoken")
+        record.profile.technologies_used, extraction.technologies_used or [], "/profile/technologies_used"
+    )
     record.profile.previous_jobs = _union(
-        record.profile.previous_jobs, extraction.previous_jobs, "/profile/previous_jobs")
+        record.profile.previous_jobs, extraction.previous_jobs or [], "/profile/previous_jobs"
+    )
+    record.profile.study_degrees = _union(
+        record.profile.study_degrees, extraction.study_degrees or [], "/profile/study_degrees"
+    )
+    record.profile.languages_spoken = _union(
+        record.profile.languages_spoken, extraction.languages_spoken or [], "/profile/languages_spoken"
+    )
     record.profile.projects_developed = _union(
-        record.profile.projects_developed, extraction.projects_developed, "/profile/projects_developed")
-    record.identity.emails = _union(
-        record.identity.emails, extraction.emails, "/identity/emails")
+        record.profile.projects_developed, extraction.projects_developed or [], "/profile/projects_developed"
+    )
+
+    new_emails = [e for e in (extraction.emails or []) if e not in record.identity.emails]
+    if new_emails:
+        record.identity.emails.extend(new_emails)
+        changes.append({"operation": "union", "path": "/identity/emails", "added": new_emails})
 
     record.scores.extraction_confidence = extraction.extraction_confidence
+    record.compliance.sensitive_data_detected = getattr(extraction, "sensitive_data_detected", None) or []
     record.updated_at = now
 
     return changes
 
 
+def _file_hash(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _load_manifest() -> dict:
+    if not INGEST_MANIFEST_PATH.exists():
+        return {}
+    try:
+        return json.loads(INGEST_MANIFEST_PATH.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _update_manifest(file_hash: str, record_id: str, filename: str) -> None:
+    manifest = _load_manifest()
+    manifest[file_hash] = {
+        "record_id": record_id,
+        "filename": filename,
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+    }
+    tmp = INGEST_MANIFEST_PATH.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    tmp.replace(INGEST_MANIFEST_PATH)
+
+
 def ingest_file(
     file_path: Path,
-    source_type: str = "document",
+    *,
     force: bool = False,
     target_record_id: Optional[str] = None,
-) -> str:
+) -> dict:
     """
-    Ingest a file: hash, dedup (hash + identity), extract text, run LLM extract,
-    create or update record, then run compliance checks.
-    Returns the record_id.
+    Ingest a single CV file (PDF or TXT).
+
+    Returns a result dict with keys: record_id, status ('created'|'updated'|'skipped'), changes.
     """
-    if not file_path.resolve().is_relative_to(INTAKE_DIR.resolve()):
-        _quarantine_security(file_path, "path_not_allowed")
-        raise PermissionError("File path is outside configured intake roots")
+    RECORDS_DIR.mkdir(parents=True, exist_ok=True)
+    INTAKE_DIR.mkdir(parents=True, exist_ok=True)
+    QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
 
-    file_hash = compute_sha256(file_path)
-    existing_by_hash = check_manifest(file_hash)
+    file_hash = _file_hash(file_path)
+    manifest = _load_manifest()
 
-    if existing_by_hash and not force and not target_record_id:
-        print(f"Skipping {file_path.name}: already ingested (hash match) into {existing_by_hash}")
-        return existing_by_hash
+    if not force and file_hash in manifest:
+        existing_id = manifest[file_hash]["record_id"]
+        return {"record_id": existing_id, "status": "skipped", "changes": []}
 
     try:
-        raw_text = extract_text_from_file(file_path)
-    except Exception as e:
+        raw_text = _read_file(file_path)
+    except ValueError as e:
         log_error({
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "stage": "text_extraction",
-            "source_file": file_path.name,
-            "source_hash": file_hash,
-            "error_type": "ParseFailed",
-            "message": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": "ingest_file_read_error",
+            "file": str(file_path),
+            "error": str(e),
         })
         raise
 
     extraction, model_info = extract_candidate_data(raw_text)
 
-    if target_record_id:
-        target_record = load_record(target_record_id)
-        if not target_record:
-            raise ValueError(f"Target record not found: {target_record_id}")
-        existing_by_identity = None
-        existing_record_id = target_record_id
-    else:
-        existing_by_identity = find_existing_by_identity(extraction)
-        existing_record_id = existing_by_hash or existing_by_identity
+    now = datetime.now(timezone.utc).isoformat()
 
-    if existing_by_identity and not existing_by_hash:
-        print(f"Identity match found for {file_path.name}: merging into existing record {existing_by_identity}")
+    if target_record_id and record_exists(target_record_id):
+        record_id = target_record_id
+        record = load_record(record_id)
+        changes = _merge_record(record, extraction, now)
+        event = {
+            "timestamp": now,
+            "event": "cv_reimport",
+            "file": file_path.name,
+            "file_hash": file_hash,
+            "model": model_info,
+            "changes": changes,
+        }
+        save_record(record_id, record, event=event)
+        _update_manifest(file_hash, record_id, file_path.name)
+        return {"record_id": record_id, "status": "updated", "changes": changes}
 
-    record_id = existing_record_id or f"cand_{uuid.uuid4().hex[:12]}"
-    now = datetime.utcnow().isoformat() + "Z"
+    dup_id = find_duplicate(extraction)
+    if dup_id:
+        record = load_record(dup_id)
+        changes = _merge_record(record, extraction, now)
+        event = {
+            "timestamp": now,
+            "event": "cv_reimport_dedup",
+            "file": file_path.name,
+            "file_hash": file_hash,
+            "model": model_info,
+            "changes": changes,
+        }
+        save_record(dup_id, record, event=event)
+        _update_manifest(file_hash, dup_id, file_path.name)
+        return {"record_id": dup_id, "status": "updated", "changes": changes}
 
-    record = load_record(record_id)
-    if not record:
-        record = CandidateRecord(
-            created_at=now,
-            updated_at=now,
-            identity=Identity(
-                primary_name=extraction.name,
-                emails=extraction.emails,
-                phones=extraction.phones,
-                linkedin_url=extraction.linkedin_url,
-            ),
-            profile=Profile(
-                headline=None,
-                summary=extraction.summary,
-                seniority=extraction.seniority,
-                years_of_experience=extraction.years_of_experience,
-                study_degrees=extraction.study_degrees,
-                technologies_used=extraction.technologies_used,
-                languages_spoken=extraction.languages_spoken,
-                location=extraction.location,
-                previous_jobs=extraction.previous_jobs,
-                projects_developed=extraction.projects_developed,
-            ),
-            scores=Scores(
-                extraction_confidence=extraction.extraction_confidence,
-            ),
-            compliance=Compliance(
-                consent_basis=DEFAULT_CONSENT_BASIS,
-                human_review_required=(extraction.extraction_confidence < get_confidence_threshold()),
-            ),
-        )
-        merge_changes = [{"operation": "create", "path": "/", "value": "initial_extraction"}]
-    else:
-        merge_changes = _merge_record(record, extraction, now)
+    from datetime import timedelta
+    record_id = f"cand_{uuid.uuid4().hex[:12]}"
+    retention_until = (datetime.now(timezone.utc) + timedelta(days=730)).isoformat()
+
+    from .schemas import Identity, Profile, Scores, Compliance, State
+
+    record = CandidateRecord(
+        created_at=now,
+        updated_at=now,
+        identity=Identity(
+            primary_name=extraction.name,
+            linkedin_url=extraction.linkedin_url,
+            emails=extraction.emails or [],
+        ),
+        profile=Profile(
+            headline=extraction.headline if hasattr(extraction, "headline") else None,
+            summary=extraction.summary,
+            seniority=extraction.seniority,
+            years_of_experience=extraction.years_of_experience,
+            technologies_used=extraction.technologies_used or [],
+            languages_spoken=extraction.languages_spoken or [],
+            previous_jobs=extraction.previous_jobs or [],
+            study_degrees=extraction.study_degrees or [],
+            location=extraction.location,
+            projects_developed=extraction.projects_developed or [],
+        ),
+        scores=Scores(extraction_confidence=extraction.extraction_confidence),
+        compliance=Compliance(
+            consent_basis="legitimate_interest",
+            source="cv_upload",
+            data_region="EEA",
+            retention_until=retention_until,
+            sensitive_data_detected=getattr(extraction, "sensitive_data_detected", None) or [],
+            human_review_required=extraction.extraction_confidence < get_confidence_threshold(),
+        ),
+        state=State(),
+    )
 
     event = {
-        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
-        "event_type": "source_ingested",
         "timestamp": now,
-        "source": {
-            "file_name": file_path.name,
-            "source_type": source_type,
-            "sha256": file_hash,
-        },
-        "actor": {
-            "type": "system",
-            "tool": "record_ingest",
-        },
+        "event": "cv_import",
+        "file": file_path.name,
+        "file_hash": file_hash,
         "model": model_info,
-        "changes": merge_changes,
-        "review": {
-            "required": record.compliance.human_review_required,
-            "reason": "low_extraction_confidence" if record.compliance.human_review_required else None,
-        },
+        "changes": [],
     }
-
     save_record(record_id, record, event=event)
-
-    try:
-        cases = evaluate_compliance(record_id)
-        if cases:
-            add_to_queue(cases)
-    except Exception as e:
-        log_error({
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "stage": "post_ingest_compliance",
-            "record_id": record_id,
-            "error_type": "ComplianceCheckFailed",
-            "message": str(e),
-        })
-
-    update_manifest(file_hash, record_id)
-
-    print(f"Successfully ingested {file_path.name} into {record_id}")
-    return record_id
-
-
-def _quarantine_security(file_path: Path, reason: str):
-    quarantine_id = f"sec_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
-    folder = QUARANTINE_DIR / "security_rejections"
-    folder.mkdir(parents=True, exist_ok=True)
-
-    data = {
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-        "reason": reason,
-        "attempted_path": anonymize_candidate_text(str(file_path)).anonymized_text,
-    }
-
-    with open(folder / f"{quarantine_id}.json", "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
+    _update_manifest(file_hash, record_id, file_path.name)
+    check_and_generate_review_cases(record_id, record)
+    return {"record_id": record_id, "status": "created", "changes": []}

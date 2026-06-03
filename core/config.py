@@ -2,168 +2,221 @@ import json
 import os
 from pathlib import Path
 from typing import Optional
-from dotenv import load_dotenv
 
-# Base project directory
-BASE_DIR = Path(__file__).parent.parent
+from filelock import FileLock
 
-load_dotenv(BASE_DIR / ".env")
+# ---------------------------------------------------------------------------
+# Base directories
+# ---------------------------------------------------------------------------
 
-# Local secrets file (gitignored). Keeps user-supplied API keys out of config.json
-# (which is committed). On Windows we cannot rely on chmod, so secrecy depends on
-# .gitignore + the user's filesystem permissions.
-SECRETS_PATH = BASE_DIR / ".secrets.json"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# Storage paths
-RECORDS_DIR = BASE_DIR / "records"
-REQUIREMENTS_DIR = BASE_DIR / "requirements"
-INDEXES_DIR = BASE_DIR / "indexes"
-LOGS_DIR = BASE_DIR / "logs"
-POLICIES_DIR = BASE_DIR / "policies"
-QUARANTINE_DIR = BASE_DIR / "quarantine"
+DATA_DIR = PROJECT_ROOT / "data"
+RECORDS_DIR = DATA_DIR / "candidates"
+REQUIREMENTS_DIR = DATA_DIR / "requirements"
+INTAKE_DIR = DATA_DIR / "intake"
+QUARANTINE_DIR = DATA_DIR / "quarantine"
+LOGS_DIR = DATA_DIR / "logs"
 
-# Intake paths
-INTAKE_DIR = BASE_DIR / "intake"
-CVS_DIR = INTAKE_DIR / "cvs"
-LINKEDIN_DIR = INTAKE_DIR / "linkedin"
+RECORD_INDEX_PATH = DATA_DIR / "record_index.json"
+INGEST_MANIFEST_PATH = DATA_DIR / "ingest_manifest.json"
+COMPLIANCE_LOG_PATH = LOGS_DIR / "compliance_log.jsonl"
+ERROR_LOG_PATH = LOGS_DIR / "error_log.jsonl"
+AUDIT_LOG_PATH = LOGS_DIR / "audit_log.jsonl"
 
-# Specific file paths
+# Append-only audit/event feed surfaced by GET /api/audit, plus the error log.
 EVENTS_LOG_PATH = LOGS_DIR / "events.jsonl"
 ERRORS_LOG_PATH = LOGS_DIR / "errors.jsonl"
-COMPLIANCE_LOG_PATH = LOGS_DIR / "compliance.jsonl"
 
-RECORD_INDEX_PATH = INDEXES_DIR / "record_index.json"
-MANIFEST_PATH = INDEXES_DIR / "manifest.json"
+# ---------------------------------------------------------------------------
+# API key management (.secrets.json — gitignored)
+# ---------------------------------------------------------------------------
 
-# API Keys — env var is the bootstrap default. Runtime overrides live in SECRETS_PATH
-# and are read via get_active_api_key() so the UI can rotate keys without a restart.
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+_SECRETS_PATH = PROJECT_ROOT / ".secrets.json"
 
 
 def _load_secrets() -> dict:
     try:
-        with open(SECRETS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        with open(_SECRETS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
         return {}
 
 
-def save_secrets(data: dict) -> None:
-    tmp = SECRETS_PATH.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-    tmp.replace(SECRETS_PATH)
+def _save_secrets(data: dict) -> None:
+    lock = FileLock(f"{_SECRETS_PATH}.lock")
+    with lock:
+        tmp = _SECRETS_PATH.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        tmp.replace(_SECRETS_PATH)
+
+
+# Supported LLM providers and where their keys live.
+PROVIDERS = ("gemini", "openai", "anthropic", "local")
+
+_SECRET_KEY_NAMES = {
+    "gemini": "gemini_api_key",
+    "openai": "openai_api_key",
+    "anthropic": "anthropic_api_key",
+}
+
+_ENV_KEY_NAMES = {
+    "gemini": "GEMINI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+
+
+def get_provider_api_key(provider: str) -> Optional[str]:
+    """Return the active key for ``provider`` (.secrets.json, then env var)."""
+    if provider == "local":
+        return None  # local servers need no key
+    secrets = _load_secrets()
+    name = _SECRET_KEY_NAMES.get(provider)
+    if name and secrets.get(name):
+        return secrets[name]
+    env_name = _ENV_KEY_NAMES.get(provider)
+    return os.getenv(env_name) if env_name else None
+
+
+def set_provider_api_key(provider: str, key: Optional[str]) -> None:
+    """Persist (or clear) the key for ``provider`` in .secrets.json."""
+    name = _SECRET_KEY_NAMES.get(provider)
+    if not name:
+        return
+    secrets = _load_secrets()
+    if key:
+        secrets[name] = key
+    else:
+        secrets.pop(name, None)
+    _save_secrets(secrets)
+
+
+def has_provider_api_key(provider: str) -> bool:
+    """True when a key for ``provider`` is available (stored or via env)."""
+    if provider == "local":
+        return False
+    secrets = _load_secrets()
+    name = _SECRET_KEY_NAMES.get(provider, "")
+    if secrets.get(name):
+        return True
+    env_name = _ENV_KEY_NAMES.get(provider, "")
+    return bool(env_name and os.getenv(env_name))
+
+
+def get_provider_api_key_last4(provider: str) -> Optional[str]:
+    key = get_provider_api_key(provider)
+    return key[-4:] if key and len(key) >= 4 else None
+
+
+def get_active_provider() -> str:
+    """Return the selected provider from config.json, defaulting to gemini.
+
+    Honours the legacy ``use_local_llm`` flag when ``provider`` is not set."""
+    config_path = PROJECT_ROOT / "config.json"
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        cfg = {}
+    provider = (cfg.get("provider") or "").strip().lower()
+    if provider in PROVIDERS:
+        return provider
+    if cfg.get("use_local_llm"):
+        return "local"
+    return "gemini"
 
 
 def get_active_api_key() -> Optional[str]:
-    """Return the runtime-configured Gemini key, falling back to env."""
-    key = (_load_secrets().get("gemini_api_key") or "").strip()
-    return key or GEMINI_API_KEY
+    """Return the user-supplied key from .secrets.json, falling back to the env var.
+
+    Back-compat shim: returns the key for the currently active provider
+    (Gemini when none selected)."""
+    provider = get_active_provider()
+    if provider == "local":
+        provider = "gemini"
+    return get_provider_api_key(provider)
+
+
+def get_active_api_key_last4() -> Optional[str]:
+    key = get_active_api_key()
+    return key[-4:] if key and len(key) >= 4 else None
+
+
+def has_user_api_key() -> bool:
+    """True when a key has been explicitly stored in .secrets.json (not just env var)."""
+    secrets = _load_secrets()
+    return bool(secrets.get("gemini_api_key"))
 
 
 def set_active_api_key(key: Optional[str]) -> None:
-    """Persist (or clear) the user-supplied Gemini key. Empty/None clears it."""
+    """Persist (or clear) the user-supplied Gemini key in .secrets.json."""
     secrets = _load_secrets()
     if key:
         secrets["gemini_api_key"] = key
     else:
         secrets.pop("gemini_api_key", None)
-    save_secrets(secrets)
+    _save_secrets(secrets)
 
 
-def get_active_api_key_last4() -> Optional[str]:
-    key = get_active_api_key()
-    if not key or len(key) < 4:
-        return None
-    return key[-4:]
+# ---------------------------------------------------------------------------
+# LLM / model configuration
+# ---------------------------------------------------------------------------
 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-def has_user_api_key() -> bool:
-    """True iff the key came from .secrets.json (not the env fallback)."""
-    return bool((_load_secrets().get("gemini_api_key") or "").strip())
-
-
-# App-config (model name, threshold, etc.) lives in config.json at project root.
-# Read directly here so core modules can stay free of any web/* imports.
-_APP_CONFIG_PATH = BASE_DIR / "config.json"
-
-
-def get_active_model(default: str = "gemini-2.5-flash") -> str:
+# Override the default model via env var or app config
+def get_active_model(default: str) -> str:
+    """Return the model name from app config (config.json) if set, else default."""
+    config_path = PROJECT_ROOT / "config.json"
     try:
-        with open(_APP_CONFIG_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        model = (data.get("model") or "").strip()
-        return model or default
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return cfg.get("model") or default
+    except (FileNotFoundError, json.JSONDecodeError):
         return default
 
 
 def get_use_local_llm() -> bool:
-    """When True, extract/match/outreach route through LM Studio on
-    http://localhost:1234 instead of Gemini. Set via the Settings UI."""
+    config_path = PROJECT_ROOT / "config.json"
     try:
-        with open(_APP_CONFIG_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return bool(data.get("use_local_llm", False))
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return bool(cfg.get("use_local_llm", False))
+    except (FileNotFoundError, json.JSONDecodeError):
         return False
 
 
-def get_confidence_threshold(default: float = 0.85) -> float:
+def get_confidence_threshold() -> float:
+    config_path = PROJECT_ROOT / "config.json"
     try:
-        with open(_APP_CONFIG_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        value = float(data.get("confidence_threshold", default))
-        return min(max(value, 0.0), 1.0)
-    except (FileNotFoundError, json.JSONDecodeError, OSError, TypeError, ValueError):
-        return default
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+        return float(cfg.get("confidence_threshold", 0.85))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return 0.85
 
 
-# LM Studio model identifier sent in the OpenAI-compatible chat request.
-# "local-model" is the legacy default; recent LM Studio versions ignore the
-# model field when only one is loaded but newer ones require the exact slug.
-LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "google/gemma-4-e4b")
+# LM Studio local server configuration
 LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
+LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
 
+# ---------------------------------------------------------------------------
 # Feature flags
+# ---------------------------------------------------------------------------
+
 # Set ENABLE_EXTERNAL_OUTREACH_LLM=true in .env to allow the outreach module
-# to call an external LLM for personalized email drafts.
-# When false (default), a safe local template is used instead.
+# to call Gemini for email drafting. Defaults to false (template mode).
 ENABLE_EXTERNAL_OUTREACH_LLM = os.getenv("ENABLE_EXTERNAL_OUTREACH_LLM", "false").lower() == "true"
 
-# Stale-refresh threshold: candidates not updated within this many months
-# will be flagged by the auto-refresh job.
+# Feature flag — when False the external LLM call is skipped in extract and match modules
+# (safe for air-gapped / no-key deploys). Defaults to true.
+ENABLE_EXTERNAL_LLM = os.getenv("ENABLE_EXTERNAL_LLM", "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Retention / stale thresholds
+# ---------------------------------------------------------------------------
+
+# Number of months before a record is considered stale and eligible for refresh.
 STALE_REFRESH_MONTHS = int(os.getenv("STALE_REFRESH_MONTHS", "6"))
-
-# Intake safety limits — prevent DoS via oversized uploads.
-# Override via env vars (values in bytes / pages).
-MAX_INGEST_FILE_BYTES: int = int(os.getenv("MAX_INGEST_FILE_BYTES", str(5 * 1024 * 1024)))  # 5 MB
-MAX_PDF_PAGES: int = int(os.getenv("MAX_PDF_PAGES", "25"))
-
-
-def init_directories():
-    directories = [
-        RECORDS_DIR,
-        REQUIREMENTS_DIR,
-        INDEXES_DIR,
-        LOGS_DIR,
-        POLICIES_DIR,
-        QUARANTINE_DIR,
-        QUARANTINE_DIR / "schema_failures",
-        QUARANTINE_DIR / "parse_failures",
-        QUARANTINE_DIR / "security_rejections",
-        CVS_DIR,
-        LINKEDIN_DIR,
-    ]
-    for d in directories:
-        d.mkdir(parents=True, exist_ok=True)
-
-    # Initialize empty indexes if they don't exist
-    if not RECORD_INDEX_PATH.exists():
-        RECORD_INDEX_PATH.write_text("{}")
-    if not MANIFEST_PATH.exists():
-        MANIFEST_PATH.write_text("{}")
-
-
-init_directories()

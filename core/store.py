@@ -62,6 +62,14 @@ def load_record(record_id: str) -> Optional[CandidateRecord]:
     return _coerce_record(record)
 
 
+def record_exists(record_id: str) -> bool:
+    """Return True when a candidate record with this ID is stored on disk."""
+    try:
+        return _resolve_record_path(record_id).exists()
+    except SecurityError:
+        return False
+
+
 def save_record(record_id: str, record: CandidateRecord, event: Optional[Dict[str, Any]] = None):
     """Atomically save a record and optionally append a provenance event."""
     path = _resolve_record_path(record_id)

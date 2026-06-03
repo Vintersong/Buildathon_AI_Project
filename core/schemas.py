@@ -31,6 +31,7 @@ class State(BaseModel):
 
 class Compliance(BaseModel):
     consent_basis: Optional[str] = None
+    consent_withdrawn: bool = False
     source: Optional[str] = None
     retention_until: Optional[str] = None
     data_region: str = "EEA"
@@ -88,6 +89,8 @@ class RequirementCriteria(BaseModel):
     nice_to_have: List[str] = Field(default_factory=list)
     location: Optional[str] = None
     language: List[str] = Field(default_factory=list)
+    seniority: Optional[str] = None
+    years_of_experience: Optional[int] = None
     category: Optional[str] = None
 
 class RequirementRecord(BaseModel):

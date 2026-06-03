@@ -18,9 +18,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
-from .compliance import evaluate_compliance
+from .compliance import check_and_generate_review_cases
 from .config import RECORDS_DIR, REQUIREMENTS_DIR
-from .review import add_to_queue
 from .schemas import CandidateRecord, Compliance, Identity, Profile, Scores
 from .store import save_record
 
@@ -557,9 +556,7 @@ def stream_ingest_file(content: bytes, filename: str, progress: CSVIngestProgres
                 if fp:
                     existing_candidates.add(fp)
 
-                cases = evaluate_compliance(record_id)
-                if cases:
-                    add_to_queue(cases)
+                check_and_generate_review_cases(record_id, rec)
 
                 progress.processed += 1
             except Exception as exc:

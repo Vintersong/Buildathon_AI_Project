@@ -24,7 +24,7 @@ from core.schemas import (
     RequirementRecord,
     RequirementCriteria,
 )
-from core.match import score_keywords, score_structured, _scoring_weights
+from core.match import score_structured
 
 
 def _build_candidate(c: dict[str, Any]) -> CandidateRecord:
@@ -67,19 +67,9 @@ def _score_candidate(
     record: CandidateRecord,
     req: RequirementRecord,
 ) -> float:
-    kw = score_keywords([candidate_id], req)
-    structured = score_structured([candidate_id], req)
-    weights = _scoring_weights(req)
-
-    skills_score = kw.get(candidate_id, 0.0)
-    s = structured.get(candidate_id, {})
-    return (
-        skills_score * weights.get("skills", 1.0)
-        + s.get("experience", 0.0) * weights.get("experience", 0.0)
-        + s.get("location", 0.0) * weights.get("location", 0.0)
-        + s.get("language", 0.0) * weights.get("language", 0.0)
-        + s.get("freshness", 0.0) * weights.get("freshness", 0.0)
-    )
+    # score_structured already returns the full weighted structured score
+    # (skills / seniority / experience / location / languages).
+    return score_structured(record, req, {})
 
 
 def evaluate_matching(golden_cases: list[dict[str, Any]]) -> dict[str, Any]:

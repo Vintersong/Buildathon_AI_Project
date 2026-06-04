@@ -29,3 +29,5 @@ nova_usage.jsonl
 shards/
 nova_sessions/
 policies/
+summary_index.json
+summary_index.md

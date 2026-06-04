@@ -20,3 +20,5 @@ shard_graph.json
 shard_index.json
 nova_usage.jsonl
 shards/
+nova_sessions/
+policies/

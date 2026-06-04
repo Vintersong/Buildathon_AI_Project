@@ -4,12 +4,6 @@ AI Talent Pool Manager for the Linnify buildathon challenge. The app helps a rec
 
 The project is local-first by default. A fresh clone runs without bundled API keys, without committed candidate data, and without any hosted-model dependency. Optional OpenAI, Anthropic, or Gemini keys can be added by each user in Settings for experiments, but the Linnify assistant workflow uses typed local proposals and human confirmation before records change.
 
-## Handoff
-
-Yes: send the GitHub repository link and have the reviewer clone it.
-
-Do not send a raw zipped working folder unless you first remove local-only files. The repository ignores virtual environments, `node_modules`, `.env*`, `.secrets.json`, `.claude/`, logs, candidate data, intake files, and `_reference/`. Each reviewer should supply their own API keys or local model settings.
-
 ## What Is Implemented
 
 - Candidate intake from pasted CV text, uploaded CV files, spreadsheet rows, and provided LinkedIn URL/text.

@@ -1,120 +1,186 @@
 # Evaluation Methodology
 
-Linnify's brief requires *"a set of clearly defined metrics to test accuracy... from the beginning of the project"* with an example target of **80 % matching accuracy**. This document describes how we measure each capability, the targets we hold ourselves to, and how to reproduce the numbers.
+The Linnify brief asks for clearly defined metrics from the beginning of the project, including an example target of 80% matching accuracy. This document defines the metrics, thresholds, and commands used to evaluate the AI Talent Pool Manager.
 
-## TL;DR — Run It
+## Quick Run
 
-```bash
-# Primary candidate-role matching KPI (offline, deterministic)
-python -m tools.eval_candidates
+```powershell
+# Security and logic regression suite
+.\venv\Scripts\python.exe -m pytest tests\test_regressions.py -q
 
-# With your Gemini key set in Settings (or via GEMINI_API_KEY env)
-python -m core.eval.run_eval
+# Primary candidate-role matching KPI
+.\venv\Scripts\python.exe -m tools.eval_candidates
 
-# Without an API key (LLM-as-judge skipped, local checks only)
-python -m core.eval.run_eval --no-llm
+# Offline extraction/ranking harness
+.\venv\Scripts\python.exe -m core.eval.run_eval --no-llm
 ```
 
-Exit code `0` if both modules pass their targets, `1` otherwise. JSON report on stdout.
+Use `core.eval.run_eval` without `--no-llm` only after configuring a local model or a hosted provider key. Hosted providers are optional and must be supplied by the local user; no key is committed to the repository.
 
-## What We Measure
+## Metrics
 
-The brief defines four modules. Each gets its own metric — chosen so that "good" means the same thing as a recruiter would mean.
-
-| Module                       | Metric                                   | Target | Status     |
-| ---------------------------- | ---------------------------------------- | ------ | ---------- |
-| 1. CV / LinkedIn extraction  | Per-field accuracy (avg across 10 CVs)   | ≥ 0.85 | Automated  |
-| 2. Talent-pool maintenance   | Refresh staleness coverage               | ≥ 0.95 | Manual     |
-| 3. Candidate-role matching   | Exact label accuracy on CSV eval set     | >= 0.80 | Automated  |
-| 4. Outreach drafts           | Personalisation + tone (LLM-as-judge)    | ≥ 0.75 | Spec-only  |
-
-"Automated" = covered by `python -m tools.eval_candidates` for the primary candidate-role KPI, plus `python -m core.eval.run_eval` for the legacy extraction/ranking harness.
-"Manual" / "Spec-only" = methodology defined here, no harness yet.
-
----
+| Module | Metric | Target | Status |
+| --- | --- | --- | --- |
+| CV / LinkedIn extraction | Per-field accuracy across golden CVs | >= 0.85 | Automated |
+| Talent-pool maintenance | Stale-profile coverage after refresh workflow | >= 0.95 | Logic tested plus demo workflow |
+| Candidate-role matching | Exact label accuracy on CSV eval set | >= 0.80 | Automated |
+| Outreach drafts | Personalization, tone, and faithfulness | >= 0.75 | Human review plus optional judge |
+| Security / compliance | No direct PII in unsafe paths; no unconfirmed agent writes | 0 known leaks | Regression tested |
 
 ## 1. CV Extraction Accuracy
 
-**Code**: `core/eval/eval_extraction.py`
-**Golden set**: 10 hand-authored CVs in `core/eval/golden_data.GOLDEN_EXTRACTIONS`, spanning intern → principal, 9 industries, EU and non-EU candidates.
+Code:
 
-**Scoring per field:**
-- `seniority`: case-insensitive substring match against expected label.
-- `technologies_used`: fraction of expected skills present in extracted list (recall-weighted — extracting *extra* skills is not penalised, missing them is).
-- `years_of_experience`: within ±1 year tolerance.
-- Other fields (when added): LangChain `criteria=correctness` LLM-as-judge when a Gemini key is configured; otherwise exact string match.
+- `core/eval/eval_extraction.py`
+- `core/eval/golden_data.py`
+- `core/extract.py`
 
-**Aggregate**: mean of per-case-per-field scores. Threshold **0.85** = roughly "one missed field per CV is acceptable, two is not".
+Golden set:
 
-**LLM mode toggle**: `--no-llm` restricts evaluation to `seniority` and `technologies_used` (the fields the local regex extractor handles deterministically). Useful in CI without API quota.
+- Hand-authored CV examples covering multiple seniorities, industries, and geographies.
 
----
+Scoring:
 
-## 2. Talent-pool Maintenance
+- `seniority`: case-insensitive substring match against the expected label.
+- `technologies_used`: recall of expected skills in the extracted list.
+- `years_of_experience`: within +/- 1 year tolerance.
+- Other fields: exact string match offline, or optional configured-provider LLM-as-judge when explicitly enabled.
 
-The brief specifies bulk refresh + "auto-update profiles untouched in 6 months". Hard to automate without a real LinkedIn ToS-compliant data source, so the metric here is **operational**, not LLM-quality:
+Default demo command:
 
-**Metric**: refresh-staleness coverage = `1 - (count of records with last_refreshed_at older than STALE_REFRESH_MONTHS / total active records)`.
-**Target**: ≥ 0.95 after a scheduled run of `tools/retention_cli.py` (when implemented as a daily job).
-**Sources**: `core.maintenance.find_stale_candidates`, `core.maintenance.bulk_refresh`.
-**How to verify in demo**: ingest a CV, manually backdate `state.last_refreshed_at` in `records/<id>.json` by 7 months, call `/api/maintenance/bulk-refresh`, confirm the record is updated and its event log contains a `bulk_refresh_update` entry.
+```powershell
+.\venv\Scripts\python.exe -m core.eval.run_eval --no-llm
+```
 
----
+The `--no-llm` path is deterministic and suitable for handoff. Optional LLM-as-judge scoring routes through `core.llm.complete`, so it can use local, OpenAI, Anthropic, or Gemini settings when configured by the user.
+
+## 2. Talent-Pool Maintenance
+
+Code:
+
+- `core/maintenance.py`
+- `web/app.py` maintenance endpoints
+- `tests/test_regressions.py`
+
+Metric:
+
+```text
+refresh_staleness_coverage =
+1 - stale_active_records_after_refresh / total_active_records
+```
+
+Target:
+
+```text
+>= 0.95
+```
+
+Demo workflow:
+
+1. Ingest a candidate.
+2. Backdate `state.last_refreshed_at` by more than 6 months in the local data record.
+3. Run `/api/maintenance/stale`.
+4. Confirm the stale record appears.
+5. Run `/api/maintenance/bulk-refresh` for that record.
+6. Confirm the record has updated refresh metadata and an audit event.
+
+LinkedIn refresh does not scrape LinkedIn. It uses user-provided URLs/text/profile data or marks a candidate for manual review.
 
 ## 3. Candidate-Role Matching Accuracy
 
-**Code**: `tools/eval_candidates.py` and `core/candidate_role_eval.py`
-**Dataset**: `tests/data/candidate_role_eval.csv`
+Code:
 
-**Task**: given one free-text `candidate_profile` and one free-text `role_description`, decide whether the candidate is a good fit for the role.
+- `tools/eval_candidates.py`
+- `core/candidate_role_eval.py`
+- `tests/data/candidate_role_eval.csv`
 
-**Label space**: `match` / `no_match`
+Task:
 
-**Primary metric**: exact match accuracy = correct predicted labels / total examples.
-**Target**: >= 0.80 (matches the brief's stated example: "80% accuracy matching candidates to roles").
+Given a free-text candidate profile and a free-text role description, predict whether the candidate is a fit.
 
-**How to run**:
+Metric:
 
-```bash
-python -m tools.eval_candidates
+```text
+accuracy = correct labels / total examples
 ```
 
-The script loads the CSV, wraps `match_candidate_to_role(...)` in a LangChain `RunnableLambda`, scores each row, prints a JSON report, and exits `0` only when the accuracy target passes.
+Label space:
 
-**Why this is deterministic**: the matcher uses repo-local skill, seniority, and years-of-experience signals rather than Gemini or LM Studio. That makes the KPI repeatable offline and suitable for CI. The older shortlist ranking eval in `core/eval/eval_matching.py` remains useful for comparing ranked shortlist behavior, but the CSV binary eval is the primary "candidate matches role" accuracy measure.
+```text
+match, no_match
+```
 
----
+Target:
 
-## 4. Outreach Draft Quality (spec-only)
+```text
+>= 0.80
+```
 
-Drafts pass through human review (`/api/review/outreach`) before sending, so the bar is "good enough that a human approves with minimal edits", not "ready to send unedited".
+Run:
 
-**Proposed metric** (not yet automated):
-- Sample 20 drafts produced by `core.outreach.generate_draft` against held-out (candidate, job) pairs.
-- LLM-as-judge (LangChain `criteria` evaluator) rates each on three axes 0–1:
-  - **Personalisation** — does the draft reference a specific skill/project from the candidate?
-  - **Tone** — professional, not over-familiar?
-  - **Faithfulness** — no fabricated facts about the candidate or company?
-- Pass: each axis ≥ 0.75 averaged across the sample.
+```powershell
+.\venv\Scripts\python.exe -m tools.eval_candidates
+```
 
-**Bias against own model**: when budget permits, run the judge with a *different* model from the one that generated the draft to reduce same-family bias.
+The primary KPI is deterministic and offline. It uses local skill, seniority, and experience signals rather than a hosted model, which makes the result repeatable for demos and CI.
 
----
+## 4. Outreach Draft Quality
 
-## What's *Not* in Scope for Metrics
+Code:
 
-- **PII redaction correctness**: covered by unit tests in `tests/test_regressions.py`, not the eval harness — it's binary (a leak is a bug, not a percentage).
-- **Compliance rule precision/recall**: same — `core.compliance.evaluate_compliance` is rule-driven, tested by enumeration.
-- **End-to-end latency**: tracked operationally (request logs), not as an accuracy metric.
+- `core/outreach.py`
+- `core/review.py`
+- `web/app.py` review/outreach endpoints
 
----
+Operational target:
 
-## Reproducibility Notes
+Drafts should be specific enough for a reviewer to approve with minimal edits, while staying faithful to known candidate and job data.
 
-- The golden sets are deterministic Python dicts — no flaky CSV parsing, no network calls.
-- LLM-mode scores will fluctuate ±2 % between runs; threshold has 5 % headroom.
-- When a Gemini key is configured via Settings → API Key, the runner picks it up automatically (`core.config.get_active_api_key()`).
-- Last known-good scores on the maintained dev branch (record these per release):
-  - CV extraction (no-LLM): **0.92** ✓
-  - Shortlisting top-1: **0.90** ✓
-  - CV extraction (LLM mode): TBD — re-run after API key is plumbed end-to-end.
+Scoring dimensions:
+
+- Personalization: references relevant candidate evidence.
+- Tone: professional and appropriate for recruiting.
+- Faithfulness: no fabricated candidate facts, company promises, or external claims.
+
+Target:
+
+```text
+average score per dimension >= 0.75
+```
+
+The application does not send outreach. Drafts are inserted into the review queue and must be approved by a human outside this app before any communication happens.
+
+## 5. Security And Agent Regression
+
+Code:
+
+- `web/app.py`
+- `core/security.py`
+- `tests/test_regressions.py`
+
+Required behavior:
+
+- Candidate-aware assistant prompts do not call hosted providers in the Linnify action path.
+- Assistant responses return typed `proposals`, `actions`, and `errors`.
+- Confirmed writes happen only through `POST /api/agent/actions/{proposal_id}/confirm`.
+- Proposed and confirmed actions create audit events.
+- Candidate refresh uses provided data or stale flags, not external scraping.
+- Outreach drafts are generated locally/template-first for the confirmed assistant path and are not sent.
+- Secrets stay outside git in `.secrets.json` or local environment variables.
+
+Run:
+
+```powershell
+.\venv\Scripts\python.exe -m pytest tests\test_regressions.py -q
+```
+
+## Release Checklist
+
+Before sending the repository link:
+
+1. Run backend regressions.
+2. Run the candidate-role eval.
+3. Run UI lint/build.
+4. Run a secret scan for common key patterns.
+5. Confirm `git status` does not include local secrets, local data, `node_modules`, virtual environments, or browser/build caches.
+

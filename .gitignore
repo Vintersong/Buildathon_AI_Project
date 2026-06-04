@@ -1,7 +1,14 @@
 _reference
+.claude/
 .env*
 .secrets.json
+.secrets.json.lock
 .secrets.json.tmp
+config.json.lock
+*.log
+ui/.vite/
+.uv-cache/
+.pytest_cache/
 __pycache__/
 *.py[cod]
 venv/

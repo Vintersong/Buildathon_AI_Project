@@ -118,10 +118,6 @@ async function start() {
           "@": __dirname,
         },
       },
-      optimizeDeps: {
-        include: [],
-        noDiscovery: true,
-      },
       server: {
         hmr: process.env.DISABLE_HMR !== "true",
         middlewareMode: true,

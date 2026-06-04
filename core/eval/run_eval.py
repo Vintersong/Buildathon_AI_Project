@@ -1,12 +1,12 @@
 """
-Bloodhound Evaluation Runner
+Linnify Evaluation Runner
 
 Usage:
     python -m core.eval.run_eval [--no-llm]
 
 Options:
-    --no-llm    Skip LangChain LLM evaluation; use string matching only.
-                Useful when GEMINI_API_KEY is not set.
+    --no-llm    Skip optional LLM-as-judge scoring; use local checks only.
+                Useful when no provider key or local server is configured.
 
 Outputs a JSON report to stdout:
 {

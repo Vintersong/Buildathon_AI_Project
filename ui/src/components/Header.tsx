@@ -40,7 +40,7 @@ const titles: Record<Screen, { title: string; subtitle: string; searchable: bool
   },
   settings: {
     title: 'Settings',
-    subtitle: 'Configure local Gemma routing, external model fallback, thresholds, and API keys.',
+    subtitle: 'Configure local routing, optional provider fallback, thresholds, and API keys.',
     searchable: false,
   },
 };

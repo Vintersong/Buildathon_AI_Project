@@ -1,7 +1,7 @@
 {
-  "provider": "gemini",
-  "model": "gemini-2.5-flash",
+  "provider": "local",
+  "model": "local-model",
   "confidence_threshold": 0.85,
   "sovereign_cloud": true,
-  "use_local_llm": false
+  "use_local_llm": true
 }

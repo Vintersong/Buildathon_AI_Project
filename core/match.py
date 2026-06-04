@@ -2,15 +2,9 @@ import json
 import os
 from pathlib import Path
 from typing import List, Dict, Any
-import google.generativeai as genai
-
 from .config import (
-    GEMINI_API_KEY,
     RECORDS_DIR,
     REQUIREMENTS_DIR,
-    get_active_api_key,
-    get_active_model,
-    get_use_local_llm,
     ENABLE_EXTERNAL_LLM,
 )
 from .path_utils import resolve_json_path
@@ -34,9 +28,6 @@ from .compliance import record_block_reasons
 # Wider funnel = better semantic recall, more LLM calls.
 # Override via RERANK_FUNNEL_SIZE env var or the app config.
 DEFAULT_RERANK_FUNNEL_SIZE = int(os.getenv("RERANK_FUNNEL_SIZE", "15"))
-
-DEFAULT_RERANK_MODEL = "gemini-2.5-pro"
-
 
 def _req(req: RequirementRecord, name: str, default=None):
     """Read a requirement criterion, tolerating both model and dict shapes."""
@@ -299,14 +290,6 @@ def llm_rerank_candidates(
         reranked.append(cand)
 
     return sorted(reranked, key=lambda c: c.get("llm_score", 0), reverse=True)[:top_n]
-
-
-def _configure_genai() -> bool:
-    key = get_active_api_key()
-    if not key:
-        return False
-    genai.configure(api_key=key)
-    return True
 
 
 def generate_shortlist(

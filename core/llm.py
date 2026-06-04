@@ -4,10 +4,10 @@ Every LLM call in the app goes through :func:`complete`. It routes to whichever
 provider is selected in ``config.json`` (``provider`` field) using a per-provider
 API key stored in ``.secrets.json`` (gitignored). Supported providers:
 
-    - ``gemini``   — Google Gemini (``google-generativeai``)
-    - ``openai``   — OpenAI / GPT (``openai``)
-    - ``anthropic``— Anthropic / Claude (``anthropic``)
-    - ``local``    — any OpenAI-compatible local server (LM Studio, Ollama, …)
+    - ``local``: any OpenAI-compatible local server (LM Studio, Ollama, etc.)
+    - ``gemini``: Google Gemini
+    - ``openai``: OpenAI / GPT
+    - ``anthropic``: Anthropic / Claude
 
 Callers always retain a heuristic / template fallback, so the app stays usable
 when no key is configured. Use :func:`llm_available` to check first.
@@ -27,8 +27,8 @@ from .config import (
 # Sensible default model per provider. Overridden by the ``model`` field in
 # config.json when set (see :func:`active_model`).
 DEFAULT_MODELS = {
-    "gemini": "gemini-2.5-flash",
-    "openai": "gpt-4o-mini",
+    "gemini": "gemini-3.5-flash",
+    "openai": "gpt-5.4-mini",
     "anthropic": "claude-sonnet-4-6",
     "local": LM_STUDIO_MODEL,
 }

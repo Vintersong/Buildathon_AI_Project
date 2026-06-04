@@ -9,6 +9,11 @@ interface SettingsPageProps {
 }
 
 type KeyProvider = 'gemini' | 'openai' | 'anthropic';
+type ModelOption = {
+  id: string;
+  label: string;
+  detail: string;
+};
 
 const PROVIDER_LABELS: Record<api.LlmProvider, string> = {
   gemini: 'Google Gemini',
@@ -18,10 +23,36 @@ const PROVIDER_LABELS: Record<api.LlmProvider, string> = {
 };
 
 const DEFAULT_MODELS: Record<api.LlmProvider, string> = {
-  gemini: 'gemini-2.5-flash',
-  openai: 'gpt-4o-mini',
+  gemini: 'gemini-3.5-flash',
+  openai: 'gpt-5.4-mini',
   anthropic: 'claude-sonnet-4-6',
   local: 'local-model',
+};
+
+const MODEL_OPTIONS: Record<api.LlmProvider, ModelOption[]> = {
+  gemini: [
+    { id: 'gemini-3.5-flash', label: 'Gemini 3.5 Flash', detail: 'Stable default for agentic and coding workflows' },
+    { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview', detail: 'Higher reasoning for complex tool use' },
+    { id: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview', detail: 'Preview model with computer-use capability' },
+    { id: 'gemini-3.1-flash-lite', label: 'Gemini 3.1 Flash-Lite', detail: 'Lower-cost lightweight extraction and classification' },
+    { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', detail: 'Previous advanced reasoning model' },
+    { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', detail: 'Previous price-performance model' },
+  ],
+  openai: [
+    { id: 'gpt-5.5', label: 'GPT-5.5', detail: 'Flagship model for complex reasoning and coding' },
+    { id: 'gpt-5.4', label: 'GPT-5.4', detail: 'Strong general model for professional work' },
+    { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', detail: 'Recommended balance of capability, latency, and cost' },
+    { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano', detail: 'Fastest low-cost option for simple tasks' },
+    { id: 'gpt-4.1', label: 'GPT-4.1', detail: 'Legacy non-reasoning option' },
+  ],
+  anthropic: [
+    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8', detail: 'Highest capability for complex reasoning and agentic coding' },
+    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', detail: 'Recommended balance of speed and intelligence' },
+    { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', detail: 'Fastest Claude option for lightweight tasks' },
+  ],
+  local: [
+    { id: 'local-model', label: 'Local model', detail: 'Use the active model served by LM Studio or another OpenAI-compatible server' },
+  ],
 };
 
 const KEY_PROVIDERS: KeyProvider[] = ['gemini', 'openai', 'anthropic'];
@@ -94,6 +125,8 @@ export default function SettingsPage({ candidatesCount, jobsCount, tasksCount }:
     if (p === 'openai') return { set: config.openai_api_key_set, last4: config.openai_api_key_last4 };
     return { set: config.anthropic_api_key_set, last4: config.anthropic_api_key_last4 };
   };
+  const modelOptions = MODEL_OPTIONS[config.provider];
+  const selectedModel = modelOptions.some((option) => option.id === config.model) ? config.model : '__custom__';
 
   return (
     <div className="grid gap-6 pb-20 xl:grid-cols-[1fr_360px] lg:pb-0">
@@ -128,13 +161,51 @@ export default function SettingsPage({ candidatesCount, jobsCount, tasksCount }:
               <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
                 Model name {config.provider === 'local' ? '(local server model)' : `(for ${PROVIDER_LABELS[config.provider]})`}
               </span>
-              <input
-                value={config.model}
-                onChange={(event) => setConfig({ ...config, model: event.target.value })}
-                placeholder={DEFAULT_MODELS[config.provider]}
+              <select
+                value={selectedModel}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  setConfig({ ...config, model: value === '__custom__' ? config.model : value });
+                }}
                 className="mt-1 h-10 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
-              />
+              >
+                {modelOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.label} - {option.id}
+                  </option>
+                ))}
+                <option value="__custom__">Custom model id</option>
+              </select>
             </label>
+
+            <div className="rounded-md border border-slate-200 bg-slate-50 p-3">
+              <div className="flex flex-wrap gap-2">
+                {modelOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setConfig({ ...config, model: option.id })}
+                    className={`rounded-md border px-3 py-2 text-left text-xs ${
+                      config.model === option.id
+                        ? 'border-cyan-500 bg-cyan-50 text-cyan-800'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    <span className="block font-semibold">{option.label}</span>
+                    <span className="mt-1 block text-slate-500">{option.detail}</span>
+                  </button>
+                ))}
+              </div>
+              <label className="mt-3 block">
+                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Custom model id</span>
+                <input
+                  value={config.model}
+                  onChange={(event) => setConfig({ ...config, model: event.target.value })}
+                  placeholder={DEFAULT_MODELS[config.provider]}
+                  className="mt-1 h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-cyan-500 focus:ring-2 focus:ring-cyan-100"
+                />
+              </label>
+            </div>
 
             <label className="block">
               <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Confidence threshold</span>

@@ -1,27 +1,48 @@
 # Linnify AI Talent Pool Manager UI
 
-React frontend for the Linnify challenge implementation. The UI talks to the FastAPI backend for candidate extraction, talent pool maintenance, job shortlisting, outreach drafts, review queue actions, audit events, and LM Studio/Gemma configuration.
+React frontend for the Linnify challenge implementation. The UI talks to the FastAPI backend for candidate intake, talent pool maintenance, job shortlisting, outreach drafts, review actions, audit events, settings, and assistant proposals.
 
-## Local Run
+## Install
 
-1. Install dependencies:
+```powershell
+cd .\ui
+npm.cmd install
+```
 
-   ```bash
-   npm install
-   ```
+## Run Locally
 
-2. Start the FastAPI backend from the repository root.
+Start the backend first from the repository root:
 
-3. Start the UI proxy:
+```powershell
+.\venv\Scripts\python.exe -m uvicorn web.app:app --host 127.0.0.1 --port 8080
+```
 
-   ```bash
-   npm run dev
-   ```
+Then start the UI proxy:
 
-The proxy serves the React app and forwards `/api/*` calls to `FASTAPI_URL` when set, or `http://127.0.0.1:8080` by default.
+```powershell
+cd .\ui
+$env:PORT="3000"
+$env:FASTAPI_URL="http://127.0.0.1:8080"
+$env:DISABLE_HMR="true"
+npm.cmd run dev
+```
 
-## Configuration
+Open `http://127.0.0.1:3000`.
 
-- Prefer LM Studio with Gemma for local LLM search and drafting by enabling local routing in Settings.
-- External Gemini usage requires a key saved through the Settings screen or backend secrets file.
+The proxy serves the React app and forwards `/api/*` calls to `FASTAPI_URL`.
+
+## Settings
+
+- Default provider is local/OpenAI-compatible (`local-model`).
+- Optional hosted providers are OpenAI, Anthropic, and Gemini.
+- Provider keys should be entered in Settings or supplied through local environment variables.
+- Real `.env` and `.secrets.json` files are ignored and should not be committed.
 - LinkedIn workflows use provided URLs or pasted profile text only. The app does not scrape LinkedIn.
+
+## Checks
+
+```powershell
+npm.cmd run lint
+npm.cmd run build
+```
+

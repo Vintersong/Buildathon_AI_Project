@@ -26,9 +26,6 @@ from core.config import (
     RECORD_INDEX_PATH,
     INTAKE_DIR,
     PROVIDERS,
-    get_active_model,
-    get_active_provider,
-    get_use_local_llm,
     get_provider_api_key_last4,
     has_provider_api_key,
     set_provider_api_key,
@@ -119,11 +116,11 @@ class AppConfig(BaseModel):
     Provider API keys live in .secrets.json (gitignored) and are never
     serialized here. Use AppConfigResponse / AppConfigUpdate for transport.
     """
-    provider: str = Field(default="gemini")
-    model: str = Field(default="gemini-2.5-flash")
+    provider: str = Field(default="local")
+    model: str = Field(default="local-model")
     confidence_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
-    sovereign_cloud: bool = Field(default=False)
-    use_local_llm: bool = Field(default=False)
+    sovereign_cloud: bool = Field(default=True)
+    use_local_llm: bool = Field(default=True)
 
 
 class AppConfigResponse(AppConfig):

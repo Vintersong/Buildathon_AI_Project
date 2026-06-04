@@ -111,7 +111,7 @@ def get_provider_api_key_last4(provider: str) -> Optional[str]:
 
 
 def get_active_provider() -> str:
-    """Return the selected provider from config.json, defaulting to gemini.
+    """Return the selected provider from config.json, defaulting to local.
 
     Honours the legacy ``use_local_llm`` flag when ``provider`` is not set."""
     config_path = PROJECT_ROOT / "config.json"
@@ -125,7 +125,7 @@ def get_active_provider() -> str:
         return provider
     if cfg.get("use_local_llm"):
         return "local"
-    return "gemini"
+    return "local"
 
 
 def get_active_api_key() -> Optional[str]:
@@ -207,7 +207,7 @@ LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
 # ---------------------------------------------------------------------------
 
 # Set ENABLE_EXTERNAL_OUTREACH_LLM=true in .env to allow the outreach module
-# to call Gemini for email drafting. Defaults to false (template mode).
+# to call the configured provider for email drafting. Defaults to false.
 ENABLE_EXTERNAL_OUTREACH_LLM = os.getenv("ENABLE_EXTERNAL_OUTREACH_LLM", "false").lower() == "true"
 
 # Feature flag — when False the external LLM call is skipped in extract and match modules

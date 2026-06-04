@@ -1,290 +1,144 @@
-# Buildathon AI Project
+# Linnify AI Talent Pool Manager
 
-This repository contains an experimental AI application with a Python backend (`core/`, `tools/`, `requirements/`) and a separate UI layer (`ui/`, `web/`). **Bring your own key for whatever agent you want** — pick a provider in the in-app **Settings** page and paste your API key. Supported providers:
+AI Talent Pool Manager for the Linnify buildathon challenge. The app helps a recruiter extract candidate profiles, maintain a local talent pool, create job requirements, shortlist candidates, prepare outreach drafts, resolve review items, and inspect audit activity.
 
-- **Anthropic (Claude)** — set an Anthropic API key
-- **OpenAI (GPT)** — set an OpenAI API key
-- **Google Gemini** — set a Gemini API key
-- **Local / OpenAI-compatible** — a local model via **LM Studio**, Ollama, or any OpenAI-compatible server (no key required)
+The project is local-first by default. A fresh clone runs without bundled API keys, without committed candidate data, and without any hosted-model dependency. Optional OpenAI, Anthropic, or Gemini keys can be added by each user in Settings for experiments, but the Linnify assistant workflow uses typed local proposals and human confirmation before records change.
 
-Keys are stored locally in `.secrets.json` (gitignored) and never committed. With no key configured the app still runs using built-in heuristic extraction and template outreach, so you can explore the UI before adding a provider.
+## Handoff
 
-The sections below walk through installation, running the project, and configuring model access.
+Yes: send the GitHub repository link and have the reviewer clone it.
 
----
+Do not send a raw zipped working folder unless you first remove local-only files. The repository ignores virtual environments, `node_modules`, `.env*`, `.secrets.json`, `.claude/`, logs, candidate data, intake files, and `_reference/`. Each reviewer should supply their own API keys or local model settings.
 
-## 1. Prerequisites
+## What Is Implemented
 
-Before you start, install:
+- Candidate intake from pasted CV text, uploaded CV files, spreadsheet rows, and provided LinkedIn URL/text.
+- Talent pool records with provenance, compliance status, stale-profile detection, and manual refresh.
+- Jobs and shortlist workflow with evidence-oriented ranking.
+- Outreach drafts that are created for human review, not sent externally.
+- Review queue for compliance flags, identity conflicts, and outreach drafts.
+- Maintenance tools for intake processing, stale scans, bulk refresh, audit health, and compliance status.
+- Assistant proposals for create job, shortlist, outreach draft, stale scan, intake processing, candidate refresh, and review summary workflows.
+- Audit events for proposed and confirmed assistant actions.
 
-- **Python 3.10+** (and `pip`)
-- **Git**
-- Optional but recommended: **virtualenv** or another environment manager
-- For local inference: **LM Studio** (desktop app)
+## Security Notes
 
-Clone the repository:
+- `config.json` defaults to the local provider: `provider: "local"`, `model: "local-model"`.
+- API keys are never stored in `config.json`; Settings writes them to `.secrets.json`, which is gitignored.
+- Candidate-aware assistant actions are typed proposals. The user must confirm before data-changing actions execute.
+- The assistant confirmation path disables hosted-model rerank/extraction/outreach calls for candidate data.
+- LinkedIn refresh means "update from user-provided URL/text/profile data" or "flag as stale"; the app does not scrape LinkedIn.
+- Outreach drafts stay in the review queue. The app does not send emails or external messages.
 
-```bash
+## Requirements
+
+- Python 3.10+
+- Node.js 20+ and npm
+- Git
+- Optional: LM Studio, Ollama, or another OpenAI-compatible local model server
+
+## Install
+
+From Windows PowerShell:
+
+```powershell
 git clone https://github.com/Vintersong/Buildathon_AI_Project.git
 cd Buildathon_AI_Project
+
+py -3 -m venv venv
+.\venv\Scripts\python.exe -m pip install --upgrade pip
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+
+cd .\ui
+npm.cmd install
+cd ..
 ```
 
-The repository root contains `requirements.txt`, `config.json`, and the main code directories (`core/`, `tools/`, `ui/`, `web/`).
+The virtual environment can be named `venv` or `.venv`; both are ignored by git. The commands above use `venv` because that is the path used in the local startup examples.
 
----
+## Start Locally
 
-## 2. Python environment & dependencies
+Terminal 1, from the repo root:
 
-To keep things clean it is recommended to use a Python virtual environment.
-
-1. Create and activate a virtual environment:
-
-   **Linux / macOS:**
-
-   ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   ```
-
-   **Windows (PowerShell):**
-
-   ```powershell
-   python -m venv .venv
-   .venv\Scripts\Activate.ps1
-   ```
-
-2. Install dependencies for the backend:
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-If there are additional sub-requirements under `requirements/`, install them in the same environment as needed.
-
----
-
-## 3. Basic project layout
-
-Key directories and files:
-
-- `core/` – Core application logic (orchestration, main services, etc.).
-- `tools/` – Helper utilities, tools, or integrations used by the core.
-- `ui/` – UI-related files (desktop or local UI development assets).
-- `web/` – Web UI or frontend code.
-- `config.json` – Main configuration file (model provider, API keys, ports, etc.).
-- `requirements.txt` – Python dependency list.
-
-You will typically:
-
-1. Configure `config.json` according to your preferred model backend.
-2. Export any needed environment variables (for API keys).
-3. Start the backend (e.g., a main Python entrypoint under `core/`).
-4. Start the UI (web or desktop) from `ui/` or `web/`.
-
-Because entrypoints can change over time, open `core/` and `web/` to find the appropriate `main.py`/`app.py` and frontend dev commands when setting things up locally.
-
----
-
-## 4. Using LM Studio (local model)
-
-This mode runs the model on your own machine via LM Studio’s local server.
-
-### 4.1 Install and set up LM Studio
-
-1. Download and install **LM Studio** from its official website.
-2. Open LM Studio and:
-   - Go to the **Models** or **Explore** section.
-   - Download a compatible chat or instruct model (for example, a LLaMA or Mistral variant that supports chat completion).
-3. Go to the **Server** / **Local Inference Server** tab inside LM Studio.
-4. Start the local server:
-   - Choose the model you downloaded.
-   - Set the host and port (by default LM Studio usually runs on `http://localhost:1234` for its API server).
-   - Start the server and keep LM Studio running.
-
-### 4.2 Point this project at LM Studio
-
-1. Open `config.json` in the repo root and set `use_local_llm` to `true`:
-
-   ```json
-   {
-     "model": "google/gemma-4-e4b",
-     "confidence_threshold": 0.85,
-     "sovereign_cloud": true,
-     "use_local_llm": true
-   }
-   ```
-
-2. Make sure the `model` value matches the model ID shown in LM Studio (check the **Local Server** tab — it lists the loaded model ID).
-
-3. If LM Studio is running on a non-default port, set the env var before starting the backend:
-
-   ```powershell
-   # Windows
-   $env:LM_STUDIO_BASE_URL="http://localhost:1234/v1"
-   $env:LM_STUDIO_MODEL="google/gemma-4-e4b"
-   ```
-
-   ```bash
-   # Linux / macOS
-   export LM_STUDIO_BASE_URL="http://localhost:1234/v1"
-   export LM_STUDIO_MODEL="google/gemma-4-e4b"
-   ```
-
-### 4.3 Run the backend with LM Studio
-
-From the repo root:
-
-```bash
-python -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload
-```
-
-The API will be available at `http://127.0.0.1:8080`.  
-The built React UI is served automatically from the same port — open `http://127.0.0.1:8080` in your browser.
-
-Once the backend is running all model calls go to LM Studio’s local server with no external API usage.
-
----
-
-## 5. Using a hosted provider (Anthropic / OpenAI / Gemini)
-
-Instead of a local model you can use any hosted provider via an API key. The flow is the same for all of them — only the key and model name differ.
-
-### 5.1 Get an API key
-
-| Provider | Where to get a key | Example model |
-|----------|--------------------|---------------|
-| Anthropic (Claude) | [console.anthropic.com](https://console.anthropic.com/) | `claude-sonnet-4-6` |
-| OpenAI (GPT) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | `gpt-4o-mini` |
-| Google Gemini | [Google AI Studio](https://aistudio.google.com/app/apikey) | `gemini-2.5-flash` |
-
-**Never commit your key** — the project keeps it out of `config.json` automatically and stores it in the gitignored `.secrets.json`.
-
-### 5.2 Choose a provider and set the key
-
-**Option A — Settings UI (recommended):**
-
-1. Start the backend (see section 4.3) and open `http://127.0.0.1:8080` → **Settings**.
-2. Pick your provider from the **Provider** dropdown (the model name defaults sensibly; adjust if needed).
-3. Paste the key for that provider and click **Save**. It takes effect immediately — no restart.
-
-Keys are stored per-provider in `.secrets.json`, so you can keep several configured and switch the dropdown at will.
-
-**Option B — environment variable:**
-
-```bash
-export ANTHROPIC_API_KEY="your-key-here"   # or OPENAI_API_KEY / GEMINI_API_KEY
-```
 ```powershell
-$env:ANTHROPIC_API_KEY="your-key-here"     # Windows PowerShell
+.\venv\Scripts\python.exe -m uvicorn web.app:app --host 127.0.0.1 --port 8080
 ```
 
-### 5.3 Provider selection in `config.json`
+Terminal 2, from the repo root:
 
-```json
-{
-  "provider": "anthropic",
-  "model": "claude-sonnet-4-6",
-  "confidence_threshold": 0.85,
-  "sovereign_cloud": false,
-  "use_local_llm": false
-}
+```powershell
+cd .\ui
+$env:PORT="3000"
+$env:FASTAPI_URL="http://127.0.0.1:8080"
+$env:DISABLE_HMR="true"
+npm.cmd run dev
 ```
 
-`provider` selects the backend (`gemini` | `openai` | `anthropic` | `local`) and `model` is the model name for that provider. The Settings UI writes both fields for you.
+Open:
 
-### 5.4 Run the backend
-
-```bash
-python -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload
+```text
+http://127.0.0.1:3000
 ```
 
-All model calls now route to your selected provider.
+The UI dev server proxies `/api/*` requests to FastAPI on port `8080`.
 
----
+## Optional Model Setup
 
-## 6. Running the UI
+The app works without a model key by using deterministic logic and templates where possible.
 
-The React UI is pre-built in `ui/dist/` and served automatically by the backend at `http://127.0.0.1:8080`. **No separate UI process is needed for normal use** — just start the backend (section 4.3 or 5.4) and open that URL.
+For local models, start an OpenAI-compatible server and set:
 
-### 6.1 Rebuilding the UI (after frontend changes)
-
-If you modify anything under `ui/src/`, rebuild before restarting the backend:
-
-```bash
-cd ui
-npm install       # first time only
-npm run build
+```powershell
+$env:LM_STUDIO_BASE_URL="http://localhost:1234/v1"
+$env:LM_STUDIO_MODEL="local-model"
 ```
 
-Then restart the backend server.
+For hosted experiments, open Settings in the UI, choose a provider, choose or type a model ID, paste that provider's key, and save. Supported provider families are:
 
-### 6.2 Frontend dev server (hot reload)
+- Local/OpenAI-compatible: `local-model` or the model served by LM Studio/Ollama
+- OpenAI: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-4.1`
+- Anthropic: `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+- Gemini: `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-pro`, `gemini-2.5-flash`
 
-For active frontend development, run the Vite dev server alongside the backend:
+Each reviewer should use their own keys. Real `.env` or `.secrets.json` files should never be committed.
 
-**Terminal 1 — backend:**
-```bash
-python -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload
+## Useful Checks
+
+Backend regression tests:
+
+```powershell
+.\venv\Scripts\python.exe -m pytest tests\test_regressions.py -q
 ```
 
-**Terminal 2 — frontend dev server:**
-```bash
-cd ui
-npm run dev
+Candidate-role matching KPI:
+
+```powershell
+.\venv\Scripts\python.exe -m tools.eval_candidates --limit 6
 ```
 
-Open `http://localhost:5173` — it proxies API calls to the backend on port 8080.
+Offline extraction/ranking eval:
 
----
-
-## 7. Switching providers
-
-The `provider` field in `config.json` controls which backend is used:
-
-| `provider` | Requires |
-|---|---|
-| `anthropic` | Anthropic API key (env var or Settings UI) |
-| `openai` | OpenAI API key (env var or Settings UI) |
-| `gemini` | Gemini API key (env var or Settings UI) |
-| `local` | a local OpenAI-compatible server (e.g. LM Studio on port 1234) |
-
-The easiest way to switch is the **Provider** dropdown on the **Settings** page in the UI — no file editing required. (`use_local_llm: true` is still honoured as a legacy shortcut for `provider: local`.)
-
----
-
-## 8. Running the LangChain benchmark
-
-The project includes a binary candidate-role matching evaluation powered by LangChain. It uses LM Studio when available and falls back to a local heuristic automatically.
-
-```bash
-# Full run (32 examples — needs LM Studio, may be slow on low-end hardware)
-python -m tools.eval_candidates
-
-# Lightweight run (recommended for demos / CI)
-python -m tools.eval_candidates --limit 6
-
-# Custom dataset or accuracy target
-python -m tools.eval_candidates --data tests/data/candidate_role_eval.csv --target 0.8
+```powershell
+.\venv\Scripts\python.exe -m core.eval.run_eval --no-llm
 ```
 
-Exit code `0` = pass, `1` = below target, `2` = startup error.
+UI type check and production build:
 
----
+```powershell
+cd .\ui
+npm.cmd run lint
+npm.cmd run build
+```
 
-## 9. Troubleshooting
+If Windows reports a locked `ui/dist` file during build, stop any running UI server and retry.
 
+## Project Map
 
-- **Backend cannot reach model**  
-  - Check `config.json` values (URL, model name).  
-  - For LM Studio, verify the server is running and the port matches.  
-  - For APIs, confirm your environment variable is exported in the same shell.
-
-- **UI shows errors or blank page**  
-  - Make sure the backend is running first.  
-  - Check the UI dev server output for port and error messages.  
-  - Confirm any API base URL in the UI config matches the backend address.
-
-- **Import or module errors in Python**  
-  - Verify the virtual environment is activated.  
-  - Re-run `pip install -r requirements.txt`.
+- `web/app.py`: FastAPI API, config endpoints, assistant proposals, confirmation endpoint, static UI serving.
+- `core/`: extraction, matching, maintenance, review, outreach, compliance, security, and provider routing.
+- `ui/src/`: React application.
+- `tests/`: regression tests for security and logic behavior.
+- `tools/`: evaluation and helper CLIs.
+- `data/`: local runtime records and logs, ignored by git.
+- `_reference/`: local challenge/reference documents, ignored by git.
 

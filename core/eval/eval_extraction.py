@@ -1,22 +1,23 @@
 """
 CV extraction accuracy evaluator.
 
-Uses LangChain's criteria-based evaluator (LLM-as-judge) when a Gemini API
-key is available, otherwise falls back to deterministic string matching.
+Uses the configured provider as an optional LLM-as-judge when available,
+otherwise falls back to deterministic string matching.
 
 Accuracy is computed per-field across all golden cases:
   - 'seniority': lowercase substring match
   - 'technologies_used': fraction of expected skills present in extracted list
-  - 'years_of_experience': within ±1 year tolerance
+  - 'years_of_experience': within +/- 1 year tolerance
 
 Target: >= 0.85 overall accuracy.
 """
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
-from core.config import get_active_api_key, get_active_model
+from core import llm as app_llm
 from core.extract import extract_candidate_data, extract_candidate_data_heuristic
 
 
@@ -41,26 +42,35 @@ def _experience_match(predicted: int | None, expected: int) -> float:
 
 
 def _eval_with_llm(predicted_str: str, expected_str: str, field: str) -> float:
-    """LangChain LLM-as-judge evaluation for a single field."""
+    """Configured-provider LLM-as-judge evaluation for a single field."""
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        from langchain.evaluation import load_evaluator
-
-        llm = ChatGoogleGenerativeAI(
-            model=get_active_model("gemini-2.5-flash"),
-            google_api_key=get_active_api_key(),
+        raw = app_llm.complete(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are evaluating a CV parser. Respond with only JSON "
+                        "matching {\"score\": number}, where score is 1 for "
+                        "correct, 0.5 for partially correct, and 0 for incorrect."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Field: {field}\n"
+                        f"Expected: {expected_str}\n"
+                        f"Predicted: {predicted_str}"
+                    ),
+                },
+            ],
+            json_mode=True,
             temperature=0,
         )
-        evaluator = load_evaluator("criteria", criteria="correctness", llm=llm)
-        result = evaluator.evaluate_strings(
-            prediction=predicted_str,
-            reference=expected_str,
-            input=f"Does the CV parser correctly identify the '{field}' field?",
-        )
-        score = result.get("score", 0)
-        return float(score) if score is not None else 0.0
+        result = json.loads(raw)
+        score = float(result.get("score", 0))
+        return min(1.0, max(0.0, score))
     except Exception:
-        return -1.0  # sentinel — caller falls back to string match
+        return -1.0  # sentinel: caller falls back to string match
 
 
 # Fields that the local regex extractor handles reliably (no LLM required)
@@ -76,18 +86,18 @@ def evaluate_extraction(
     """
     Evaluate CV extraction accuracy against golden_cases.
 
-    When use_llm=False, only fields in _LOCAL_FIELDS are evaluated (target >= 0.85).
+    When use_llm=False, only fields in _LOCAL_FIELDS are evaluated.
     When use_llm=True, all fields including _LLM_ONLY_FIELDS are evaluated.
 
     Args:
         golden_cases: list from golden_data.GOLDEN_EXTRACTIONS
-        use_llm: force LLM evaluation (True/False). Default: auto-detect from env.
+        use_llm: force LLM evaluation (True/False). Default: auto-detect.
 
     Returns:
         dict with keys: accuracy, target, pass, per_field, details, llm_mode
     """
     if use_llm is None:
-        use_llm = bool(get_active_api_key())
+        use_llm = app_llm.llm_available()
 
     results: list[dict[str, Any]] = []
 
@@ -141,12 +151,10 @@ def evaluate_extraction(
 
     overall = sum(r["score"] for r in results) / len(results)
 
-    per_field: dict[str, float] = {}
+    per_field: dict[str, list[float]] = {}
     for r in results:
-        f = r["field"]
-        per_field.setdefault(f, [])  # type: ignore[arg-type]
-        per_field[f].append(r["score"])  # type: ignore[index]
-    per_field_avg = {f: round(sum(v) / len(v), 3) for f, v in per_field.items()}  # type: ignore[union-attr]
+        per_field.setdefault(r["field"], []).append(r["score"])
+    per_field_avg = {f: round(sum(v) / len(v), 3) for f, v in per_field.items()}
 
     return {
         "accuracy": round(overall, 3),

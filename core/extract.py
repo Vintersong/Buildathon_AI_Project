@@ -1,35 +1,22 @@
 import json
 import re
 from typing import Dict, Any
-import google.generativeai as genai
 from pydantic import ValidationError
-from datetime import datetime
+from datetime import datetime, timezone
 import uuid
 
-from .config import QUARANTINE_DIR, get_use_local_llm, LM_STUDIO_MODEL, LM_STUDIO_BASE_URL
+from .config import QUARANTINE_DIR, LM_STUDIO_MODEL, LM_STUDIO_BASE_URL
 from .schemas import CandidateExtraction
 from .security import anonymize_candidate_text, rehydrate_text
 
 # Feature flag — when False the external LLM call is skipped and the
 # heuristic fallback is used instead (safe for air-gapped / no-key deploys).
-import os
-from .config import GEMINI_API_KEY, get_active_api_key, get_active_model, ENABLE_EXTERNAL_LLM
-
-DEFAULT_EXTRACT_MODEL = "gemini-2.5-flash"
+from .config import ENABLE_EXTERNAL_LLM
 
 
 # ---------------------------------------------------------------------------
 # LM Studio helpers (used by web/app.py chat endpoint)
 # ---------------------------------------------------------------------------
-
-def _configure_genai() -> bool:
-    """Configure Gemini with the currently-active key. Returns True on success."""
-    key = get_active_api_key()
-    if not key:
-        return False
-    genai.configure(api_key=key)
-    return True
-
 
 def _lm_studio_available() -> bool:
     """Return True if the configured LM Studio server is reachable."""
@@ -207,7 +194,7 @@ def extract_candidate_data(text: str) -> tuple["CandidateExtraction", Dict[str, 
 def extract_candidate_data_heuristic(text: str) -> tuple["CandidateExtraction", Dict[str, Any]]:
     """
     Heuristic fallback extractor — no LLM required.
-    Used when ENABLE_EXTERNAL_LLM is False or GEMINI_API_KEY is absent.
+    Used when ENABLE_EXTERNAL_LLM is False or no configured LLM is available.
     Quality is lower but always available.
     """
     import re as _re
@@ -297,7 +284,7 @@ def extract_candidate_data_heuristic(text: str) -> tuple["CandidateExtraction", 
 
 
 def _quarantine_failed_extraction(text: str, reason: str):
-    quarantine_id = f"ext_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+    quarantine_id = f"ext_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     folder = QUARANTINE_DIR / "extraction_failures"
     folder.mkdir(parents=True, exist_ok=True)
     # Redact PII before persisting — quarantined CVs must not leak raw identifiers.

@@ -30,6 +30,8 @@ DEFAULT_MODELS = {
     "gemini": "gemini-3.5-flash",
     "openai": "gpt-5.4-mini",
     "anthropic": "claude-sonnet-4-6",
+    # Free-tier HF router model — change via config.json "model" field
+    "huggingface": "meta-llama/Llama-3.1-8B-Instruct",
     "local": LM_STUDIO_MODEL,
 }
 
@@ -74,6 +76,8 @@ def complete(
         text = _complete_openai(messages, json_mode, temperature, model)
     elif provider == "anthropic":
         text = _complete_anthropic(messages, json_mode, temperature, model)
+    elif provider == "huggingface":
+        text = _complete_huggingface(messages, json_mode, temperature, model)
     else:
         text = _complete_gemini(messages, json_mode, temperature, model)
 
@@ -157,6 +161,52 @@ def _complete_anthropic(messages, json_mode, temperature, model) -> str:
         messages=convo,
     )
     return "".join(b.text for b in resp.content if getattr(b, "type", "") == "text")
+
+
+def _complete_huggingface(messages, json_mode, temperature, model) -> str:
+    """HuggingFace Inference API via its OpenAI-compatible endpoint.
+
+    Uses the free-tier Inference API — set HUGGINGFACE_API_KEY (or save via
+    the Settings page) to a token from https://huggingface.co/settings/tokens.
+    Default model: mistralai/Mistral-7B-Instruct-v0.3 (free, no approval needed).
+    Swap via config.json "model" field, e.g. "meta-llama/Meta-Llama-3.1-8B-Instruct".
+
+    HF's endpoint does not support response_format:json_object for all models,
+    so JSON mode is requested via the system prompt only.
+    """
+    from openai import OpenAI
+
+    key = get_provider_api_key("huggingface")
+    if not key:
+        raise ValueError("No HuggingFace API key configured")
+
+    client = OpenAI(
+        base_url="https://router.huggingface.co/v1/",
+        api_key=key,
+    )
+
+    # Inject JSON instruction into system prompt when needed
+    if json_mode:
+        inject = "Respond with ONLY valid JSON. No markdown, no code fences, no commentary."
+        patched = []
+        system_patched = False
+        for m in messages:
+            if m["role"] == "system" and not system_patched:
+                patched.append({"role": "system", "content": m["content"] + "\n\n" + inject})
+                system_patched = True
+            else:
+                patched.append(m)
+        if not system_patched:
+            patched = [{"role": "system", "content": inject}] + patched
+        messages = patched
+
+    resp = client.chat.completions.create(
+        model=model,
+        messages=messages,
+        temperature=temperature,
+        max_tokens=2048,
+    )
+    return resp.choices[0].message.content or ""
 
 
 def _complete_local(messages, json_mode, schema) -> str:

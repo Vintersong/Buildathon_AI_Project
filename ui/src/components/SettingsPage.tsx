@@ -8,7 +8,7 @@ interface SettingsPageProps {
   tasksCount: number;
 }
 
-type KeyProvider = 'gemini' | 'openai' | 'anthropic';
+type KeyProvider = 'gemini' | 'openai' | 'anthropic' | 'huggingface';
 type ModelOption = {
   id: string;
   label: string;
@@ -19,6 +19,7 @@ const PROVIDER_LABELS: Record<api.LlmProvider, string> = {
   gemini: 'Google Gemini',
   openai: 'OpenAI (GPT)',
   anthropic: 'Anthropic (Claude)',
+  huggingface: 'HuggingFace (free tier)',
   local: 'Local / OpenAI-compatible',
 };
 
@@ -26,6 +27,7 @@ const DEFAULT_MODELS: Record<api.LlmProvider, string> = {
   gemini: 'gemini-3.5-flash',
   openai: 'gpt-5.4-mini',
   anthropic: 'claude-sonnet-4-6',
+  huggingface: 'meta-llama/Llama-3.1-8B-Instruct',
   local: 'local-model',
 };
 
@@ -50,17 +52,22 @@ const MODEL_OPTIONS: Record<api.LlmProvider, ModelOption[]> = {
     { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', detail: 'Recommended balance of speed and intelligence' },
     { id: 'claude-haiku-4-5', label: 'Claude Haiku 4.5', detail: 'Fastest Claude option for lightweight tasks' },
   ],
+  huggingface: [
+    { id: 'meta-llama/Llama-3.1-8B-Instruct', label: 'Llama 3.1 8B Instruct', detail: 'Recommended — strong instruction following, free tier' },
+    { id: 'google/gemma-4-26B-A4B-it', label: 'Gemma 4 26B', detail: 'Google open model — clean structured output' },
+    { id: 'deepseek-ai/DeepSeek-V4-Flash', label: 'DeepSeek V4 Flash', detail: 'Fast reasoning model, free tier' },
+  ],
   local: [
     { id: 'local-model', label: 'Local model', detail: 'Use the active model served by LM Studio or another OpenAI-compatible server' },
   ],
 };
 
-const KEY_PROVIDERS: KeyProvider[] = ['gemini', 'openai', 'anthropic'];
+const KEY_PROVIDERS: KeyProvider[] = ['gemini', 'openai', 'anthropic', 'huggingface'];
 
 export default function SettingsPage({ candidatesCount, jobsCount, tasksCount }: SettingsPageProps) {
   const [config, setConfig] = useState<api.AppConfig | null>(null);
   const [lmStatus, setLmStatus] = useState<api.LmStudioStatus | null>(null);
-  const [keys, setKeys] = useState<Record<KeyProvider, string>>({ gemini: '', openai: '', anthropic: '' });
+  const [keys, setKeys] = useState<Record<KeyProvider, string>>({ gemini: '', openai: '', anthropic: '', huggingface: '' });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -98,9 +105,10 @@ export default function SettingsPage({ candidatesCount, jobsCount, tasksCount }:
         gemini_api_key: keys.gemini || undefined,
         openai_api_key: keys.openai || undefined,
         anthropic_api_key: keys.anthropic || undefined,
+        huggingface_api_key: keys.huggingface || undefined,
       });
       setConfig(saved);
-      setKeys({ gemini: '', openai: '', anthropic: '' });
+      setKeys({ gemini: '', openai: '', anthropic: '', huggingface: '' });
       const lm = await api.fetchLmStudioStatus();
       setLmStatus(lm);
       setMessage('Settings saved.');
@@ -123,7 +131,8 @@ export default function SettingsPage({ candidatesCount, jobsCount, tasksCount }:
   const keyStatus = (p: KeyProvider): { set: boolean; last4: string | null } => {
     if (p === 'gemini') return { set: config.gemini_api_key_set, last4: config.gemini_api_key_last4 };
     if (p === 'openai') return { set: config.openai_api_key_set, last4: config.openai_api_key_last4 };
-    return { set: config.anthropic_api_key_set, last4: config.anthropic_api_key_last4 };
+    if (p === 'anthropic') return { set: config.anthropic_api_key_set, last4: config.anthropic_api_key_last4 };
+    return { set: config.huggingface_api_key_set, last4: config.huggingface_api_key_last4 };
   };
   const modelOptions = MODEL_OPTIONS[config.provider];
   const selectedModel = modelOptions.some((option) => option.id === config.model) ? config.model : '__custom__';

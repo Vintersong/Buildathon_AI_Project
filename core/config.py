@@ -53,18 +53,20 @@ def _save_secrets(data: dict) -> None:
 
 
 # Supported LLM providers and where their keys live.
-PROVIDERS = ("gemini", "openai", "anthropic", "local")
+PROVIDERS = ("gemini", "openai", "anthropic", "huggingface", "local")
 
 _SECRET_KEY_NAMES = {
     "gemini": "gemini_api_key",
     "openai": "openai_api_key",
     "anthropic": "anthropic_api_key",
+    "huggingface": "huggingface_api_key",
 }
 
 _ENV_KEY_NAMES = {
     "gemini": "GEMINI_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "huggingface": "HUGGINGFACE_API_KEY",
 }
 
 

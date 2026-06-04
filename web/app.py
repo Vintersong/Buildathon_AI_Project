@@ -131,6 +131,8 @@ class AppConfigResponse(AppConfig):
     openai_api_key_last4: Optional[str] = None
     anthropic_api_key_set: bool = False
     anthropic_api_key_last4: Optional[str] = None
+    huggingface_api_key_set: bool = False
+    huggingface_api_key_last4: Optional[str] = None
 
 
 class AppConfigUpdate(AppConfig):
@@ -141,6 +143,7 @@ class AppConfigUpdate(AppConfig):
     gemini_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
+    huggingface_api_key: Optional[str] = None
 
 
 def load_app_config() -> AppConfig:
@@ -172,6 +175,8 @@ def _config_response() -> AppConfigResponse:
         openai_api_key_last4=get_provider_api_key_last4("openai"),
         anthropic_api_key_set=has_provider_api_key("anthropic"),
         anthropic_api_key_last4=get_provider_api_key_last4("anthropic"),
+        huggingface_api_key_set=has_provider_api_key("huggingface"),
+        huggingface_api_key_last4=get_provider_api_key_last4("huggingface"),
     )
 
 
@@ -195,7 +200,7 @@ async def lm_studio_status():
 
 @app.post("/api/config", response_model=AppConfigResponse)
 async def post_config(body: AppConfigUpdate):
-    key_fields = {"gemini_api_key", "openai_api_key", "anthropic_api_key"}
+    key_fields = {"gemini_api_key", "openai_api_key", "anthropic_api_key", "huggingface_api_key"}
     cfg = AppConfig(**body.model_dump(exclude=key_fields))
     if cfg.provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unknown provider: '{cfg.provider}'")
@@ -205,6 +210,7 @@ async def post_config(body: AppConfigUpdate):
             ("gemini", body.gemini_api_key),
             ("openai", body.openai_api_key),
             ("anthropic", body.anthropic_api_key),
+            ("huggingface", body.huggingface_api_key),
         ):
             if value is not None:
                 set_provider_api_key(provider, value.strip() or None)

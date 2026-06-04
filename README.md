@@ -90,6 +90,7 @@ $env:LM_STUDIO_MODEL="local-model"
 For hosted experiments, open Settings in the UI, choose a provider, choose or type a model ID, paste that provider's key, and save. Supported provider families are:
 
 - Local/OpenAI-compatible: `local-model` or the model served by LM Studio/Ollama
+- HuggingFace (free tier): `meta-llama/Llama-3.1-8B-Instruct`, `google/gemma-4-26B-A4B-it`, `deepseek-ai/DeepSeek-V4-Flash` — get a free token at huggingface.co/settings/tokens
 - OpenAI: `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.4-nano`, `gpt-4.1`
 - Anthropic: `claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`
 - Gemini: `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-3-flash-preview`, `gemini-3.1-flash-lite`, `gemini-2.5-pro`, `gemini-2.5-flash`
@@ -104,17 +105,31 @@ Backend regression tests:
 .\venv\Scripts\python.exe -m pytest tests\test_regressions.py -q
 ```
 
-Candidate-role matching KPI:
+Offline eval — candidate matching and CV extraction accuracy (no cloud account needed):
 
 ```powershell
-.\venv\Scripts\python.exe -m tools.eval_candidates --limit 6
+.\venv\Scripts\python.exe tools\run_eval.py
 ```
 
-Offline extraction/ranking eval:
+Runs two suites against golden data and prints pass/fail per case plus an overall summary:
+- **Suite 1 — Candidate Match Ranking**: verifies `score_structured` ranks the correct candidate #1 across 10 role/candidate scenarios. No LLM involved — pure algorithm.
+- **Suite 2 — CV Extraction Accuracy**: scores seniority exact match, skill recall, and YOE tolerance across 10 golden CVs. Uses the active provider; falls back to heuristics if no key is set.
+
+Run a single suite:
 
 ```powershell
-.\venv\Scripts\python.exe -m core.eval.run_eval --no-llm
+.\venv\Scripts\python.exe tools\run_eval.py --suite matching
+.\venv\Scripts\python.exe tools\run_eval.py --suite extraction
 ```
+
+LangSmith eval (requires a free LangSmith account at smith.langchain.com):
+
+```powershell
+$env:LANGCHAIN_API_KEY="ls__..."
+.\venv\Scripts\python.exe tools\langsmith_eval.py
+```
+
+Creates two datasets in LangSmith on first run and streams per-example traces for review.
 
 UI type check and production build:
 

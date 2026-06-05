@@ -26,7 +26,7 @@ function confidenceTier(score: number | null): ConfidenceTier | null {
 export default function AiExtractionPanel({ detail }: AiExtractionPanelProps) {
   const [showRaw, setShowRaw] = useState(false);
 
-  const skills = detail.allSkills.length ? detail.allSkills : detail.topSkills;
+  const skills = detail.allSkills?.length ? detail.allSkills : (detail.topSkills || []);
   const score = detail.extractionConfidence;
   const tier = confidenceTier(score);
   const percent = Math.round((score ?? 0) * 100);
@@ -38,8 +38,8 @@ export default function AiExtractionPanel({ detail }: AiExtractionPanelProps) {
     { label: 'Skills extracted', ok: skills.length > 0 },
     { label: 'Years of experience', ok: detail.yearsOfExperience !== null },
     { label: 'Location on file', ok: Boolean(detail.location) },
-    { label: 'Contact email', ok: detail.emails.length > 0 },
-    { label: 'Education / degrees', ok: detail.studyDegrees.length > 0 },
+    { label: 'Contact email', ok: (detail.emails || []).length > 0 },
+    { label: 'Education / degrees', ok: (detail.studyDegrees || []).length > 0 },
     { label: 'Profile summary', ok: Boolean(detail.summary) },
   ];
   const missingCount = checks.filter((check) => !check.ok).length;

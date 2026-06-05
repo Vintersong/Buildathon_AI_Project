@@ -1,7 +1,9 @@
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from filelock import FileLock
 
@@ -46,10 +48,19 @@ def _load_secrets() -> dict:
 def _save_secrets(data: dict) -> None:
     lock = FileLock(f"{_SECRETS_PATH}.lock")
     with lock:
-        tmp = _SECRETS_PATH.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        tmp.replace(_SECRETS_PATH)
+        # mkstemp creates the file with 0o600 permissions (no world-readable
+        # window), then we atomically replace the target path.
+        fd, tmp_path = tempfile.mkstemp(dir=_SECRETS_PATH.parent, suffix=".secrets.tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            Path(tmp_path).replace(_SECRETS_PATH)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 
 # Supported LLM providers and where their keys live.
@@ -201,7 +212,24 @@ def get_confidence_threshold() -> float:
 
 
 # LM Studio local server configuration
-LM_STUDIO_BASE_URL = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1")
+def _safe_lm_studio_url(url: str) -> str:
+    """Guard against SSRF: only allow localhost/loopback targets."""
+    try:
+        host = urlparse(url).hostname or ""
+    except Exception:
+        host = ""
+    _default = "http://localhost:1234/v1"
+    if host not in ("localhost", "127.0.0.1", "::1", ""):
+        import warnings
+        warnings.warn(
+            f"LM_STUDIO_BASE_URL {url!r} rejected — must be a localhost address. "
+            "Falling back to default.",
+            stacklevel=2,
+        )
+        return _default
+    return url
+
+LM_STUDIO_BASE_URL = _safe_lm_studio_url(os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234/v1"))
 LM_STUDIO_MODEL = os.getenv("LM_STUDIO_MODEL", "local-model")
 
 # ---------------------------------------------------------------------------

@@ -12,6 +12,7 @@ import MaintenancePage from './components/MaintenancePage';
 import SettingsPage from './components/SettingsPage';
 import IngestModal from './components/IngestModal';
 import AIAgentSidebar from './components/AIAgentSidebar';
+import RouteSkeleton from './components/RouteSkeleton';
 
 type Toast = { message: string; type: 'success' | 'info' | 'error' };
 
@@ -27,6 +28,7 @@ export default function App() {
   const [showIngestModal, setShowIngestModal] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [focusCandidateId, setFocusCandidateId] = useState<string | null>(null);
 
   const pendingReviews = useMemo(
     () => reviewTasks.filter((task) => task.status === 'pending'),
@@ -62,13 +64,18 @@ export default function App() {
     const candidate = await api.ingestCandidate(file);
     showToast(`Candidate ${candidate.name} added to the talent pool.`);
     setShowIngestModal(false);
+    // Keep momentum: route straight to the new candidate's detail view.
+    setActiveScreen('talent');
     await refreshAll();
+    setFocusCandidateId(candidate.id);
   };
 
   const handleIngestLinkedIn = async (linkedinUrl: string) => {
     const candidate = await api.ingestLinkedInCandidate(linkedinUrl);
     showToast(`LinkedIn profile for ${candidate.name} added for review.`);
     setShowIngestModal(false);
+    // LinkedIn ingest creates a review item — send the operator to the queue.
+    setActiveScreen('review');
     await refreshAll();
   };
 
@@ -79,6 +86,9 @@ export default function App() {
   };
 
   const renderScreen = () => {
+    if (isLoading) {
+      return <RouteSkeleton screen={activeScreen} />;
+    }
     if (activeScreen === 'overview') {
       return (
         <OverviewPage
@@ -96,9 +106,11 @@ export default function App() {
         <TalentPoolPage
           candidates={candidates}
           searchQuery={searchQuery}
+          initialCandidateId={focusCandidateId}
           onOpenIngest={() => setShowIngestModal(true)}
           onRefresh={refreshAll}
           onToast={showToast}
+          onConsumeInitial={() => setFocusCandidateId(null)}
         />
       );
     }
@@ -180,6 +192,7 @@ export default function App() {
 
       <AIAgentSidebar
         isOpen={showAssistant}
+        activeScreen={activeScreen}
         candidates={candidates}
         jobs={jobs}
         reviewTasks={reviewTasks}

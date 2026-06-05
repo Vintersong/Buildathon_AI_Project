@@ -27,12 +27,15 @@ var import_path = __toESM(require("path"), 1);
 var import_dotenv = require("dotenv");
 var import_vite = require("vite");
 var import_http_proxy_middleware = require("http-proxy-middleware");
+var import_vite2 = __toESM(require("@tailwindcss/vite"), 1);
+var import_plugin_react = __toESM(require("@vitejs/plugin-react"), 1);
 var __dirname = process.cwd();
 (0, import_dotenv.config)({ path: import_path.default.resolve(__dirname, "../.env") });
 var app = (0, import_express.default)();
 var PORT = Number(process.env.PORT || 3e3);
 var jsonBodyParser = import_express.default.json({ limit: "15mb" });
 var FASTAPI_URL = process.env.FASTAPI_URL || "http://localhost:8080";
+var API_TOKEN = process.env.TALENT_POOL_API_TOKEN || process.env.APP_API_TOKEN || "";
 function parseLinkedInProfileName(linkedinUrl) {
   const slug = linkedinUrl.replace(/\/$/, "").split("/").pop() || "";
   const words = slug.split(/[-_.]+/).filter(Boolean);
@@ -43,9 +46,13 @@ function isLinkedInProfileUrl(linkedinUrl) {
 }
 async function forwardToFastAPI(req, res, apiPath) {
   try {
+    const headers = { "Content-Type": "application/json" };
+    if (API_TOKEN) {
+      headers["X-API-Token"] = API_TOKEN;
+    }
     const backend = await fetch(`${FASTAPI_URL}${apiPath}`, {
       method: req.method,
-      headers: { "Content-Type": "application/json" },
+      headers,
       body: JSON.stringify(req.body)
     });
     const payload = await backend.text();
@@ -93,6 +100,11 @@ app.use(
     changeOrigin: true,
     pathRewrite: { "^/": "/api/" },
     on: {
+      proxyReq: (proxyReq) => {
+        if (API_TOKEN) {
+          proxyReq.setHeader("X-API-Token", API_TOKEN);
+        }
+      },
       error: (_err, _req, res) => {
         res.status(502).json({
           error: "FastAPI backend unavailable. Start it with: uvicorn web.app:app --port 8080"
@@ -104,7 +116,20 @@ app.use(
 async function start() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await (0, import_vite.createServer)({
-      server: { middlewareMode: true },
+      cacheDir: process.env.VITE_CACHE_DIR || import_path.default.join(__dirname, ".vite"),
+      configFile: false,
+      root: __dirname,
+      plugins: [(0, import_plugin_react.default)(), (0, import_vite2.default)()],
+      resolve: {
+        alias: {
+          "@": __dirname
+        }
+      },
+      server: {
+        hmr: process.env.DISABLE_HMR !== "true",
+        middlewareMode: true,
+        watch: process.env.DISABLE_HMR === "true" ? null : {}
+      },
       appType: "spa"
     });
     app.use(vite.middlewares);

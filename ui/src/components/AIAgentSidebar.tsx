@@ -2,15 +2,62 @@ import { FormEvent, useMemo, useState } from 'react';
 import { Ban, Bot, CheckCircle2, Loader2, Send, ShieldCheck, X } from 'lucide-react';
 import * as api from '../api';
 import { Candidate, JobRequirement, ReviewTask } from '../types';
+import { Screen } from './Sidebar';
 
 interface AIAgentSidebarProps {
   isOpen: boolean;
+  activeScreen: Screen;
   candidates: Candidate[];
   jobs: JobRequirement[];
   reviewTasks: ReviewTask[];
   onClose: () => void;
   onActionCompleted: () => Promise<void>;
 }
+
+const DEFAULT_ACTIONS = [
+  'Create a Senior Python Engineer role in Remote with Python and FastAPI',
+  'Run shortlist for the newest active job',
+  'Find stale profiles older than 6 months',
+  'Show me active jobs',
+  'What review cases need attention?',
+];
+
+// Quick actions are deterministic, task-oriented prompts scoped to the active
+// center-canvas surface — the assistant acts as a contextual executor rather
+// than an open-ended chat box.
+const QUICK_ACTIONS: Record<Screen, string[]> = {
+  overview: DEFAULT_ACTIONS,
+  talent: [
+    'Group these candidates into a shortlist',
+    'Find likely duplicate profiles',
+    'Flag profiles older than 6 months',
+  ],
+  jobs: [
+    'Run shortlist for the newest active job',
+    'Draft outreach for the top match',
+    'Show me active jobs',
+  ],
+  review: [
+    'Explain why these cases were flagged',
+    'Summarize pending compliance flags',
+    'What review cases need attention?',
+  ],
+  maintenance: [
+    'Find stale profiles older than 6 months',
+    'Process the intake folder',
+    'Summarize audit health',
+  ],
+  settings: DEFAULT_ACTIONS,
+};
+
+const SCREEN_LABELS: Record<Screen, string> = {
+  overview: 'Overview',
+  talent: 'Talent Pool',
+  jobs: 'Jobs & Shortlist',
+  review: 'Outreach & Review',
+  maintenance: 'Maintenance',
+  settings: 'Settings',
+};
 
 type Message = api.AssistantMessage & {
   proposals?: api.AgentProposal[];
@@ -22,6 +69,7 @@ type ProposalStatus = 'idle' | 'loading' | 'confirmed' | 'cancelled' | 'error';
 
 export default function AIAgentSidebar({
   isOpen,
+  activeScreen,
   candidates,
   jobs,
   reviewTasks,
@@ -38,13 +86,7 @@ export default function AIAgentSidebar({
   const [loading, setLoading] = useState(false);
   const [proposalStates, setProposalStates] = useState<Record<string, { status: ProposalStatus; error?: string }>>({});
 
-  const prompts = useMemo(() => [
-    'Create a Senior Python Engineer role in Remote with Python and FastAPI',
-    'Run shortlist for the newest active job',
-    'Find stale profiles older than 6 months',
-    'Show me active jobs',
-    'What review cases need attention?',
-  ], []);
+  const prompts = useMemo(() => QUICK_ACTIONS[activeScreen] ?? DEFAULT_ACTIONS, [activeScreen]);
 
   if (!isOpen) return null;
 
@@ -212,6 +254,9 @@ export default function AIAgentSidebar({
         </div>
 
         <div className="border-t border-slate-200 p-5">
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-400">
+            Quick actions · {SCREEN_LABELS[activeScreen]}
+          </p>
           <div className="mb-3 flex flex-wrap gap-2">
             {prompts.map((prompt) => (
               <button

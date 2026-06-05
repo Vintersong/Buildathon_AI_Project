@@ -64,6 +64,41 @@ export interface JobRequirement {
   shortlist: ShortlistCandidate[];
 }
 
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+export interface ProjectProspect {
+  id: string;
+  title: string;
+  client: string | null;
+  domain: string | null;
+  status: 'DRAFT' | 'MATCHING' | 'SHORTLISTED' | 'ARCHIVED';
+  tags: string[];
+  brief: string;
+  requiredSkills: string[];
+  niceToHaveSkills: string[];
+  minSeniority: string | null;
+  locations: string[];
+  languages: string[];
+  constraintsSummary: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectMatchCandidate {
+  id: string;
+  name: string;
+  confidence: number;
+  explanation: string;
+  status: 'drafted' | 'shortlisted' | 'discarded';
+  initials: string;
+}
+
+// ---------------------------------------------------------------------------
+// Review / Audit
+// ---------------------------------------------------------------------------
+
 export interface ReviewTask {
   id: string;
   type: 'IDENTITY_CONFLICT' | 'COMPLIANCE_FLAG' | 'OUTREACH_DRAFT';

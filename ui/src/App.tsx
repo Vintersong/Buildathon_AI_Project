@@ -7,6 +7,8 @@ import Header from './components/Header';
 import OverviewPage from './components/OverviewPage';
 import TalentPoolPage from './components/TalentPoolPage';
 import JobsPage from './components/JobsPage';
+import ProjectsPage from './components/ProjectsPage';
+import ProjectDetailPage from './components/ProjectDetailPage';
 import ReviewPage from './components/ReviewPage';
 import MaintenancePage from './components/MaintenancePage';
 import SettingsPage from './components/SettingsPage';
@@ -27,6 +29,7 @@ export default function App() {
   const [showIngestModal, setShowIngestModal] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
 
   const pendingReviews = useMemo(
     () => reviewTasks.filter((task) => task.status === 'pending'),
@@ -113,6 +116,23 @@ export default function App() {
         />
       );
     }
+    if (activeScreen === 'projects') {
+      if (activeProjectId) {
+        return (
+          <ProjectDetailPage
+            projectId={activeProjectId}
+            onBack={() => setActiveProjectId(null)}
+            onToast={showToast}
+          />
+        );
+      }
+      return (
+        <ProjectsPage
+          onOpenProject={(id) => setActiveProjectId(id)}
+          onToast={showToast}
+        />
+      );
+    }
     if (activeScreen === 'review') {
       return (
         <ReviewPage
@@ -150,6 +170,7 @@ export default function App() {
         onNavigate={(screen) => {
           setActiveScreen(screen);
           setSearchQuery('');
+          if (screen !== 'projects') setActiveProjectId(null);
         }}
       />
 

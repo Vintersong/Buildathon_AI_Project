@@ -2,13 +2,14 @@ import {
   Briefcase,
   ClipboardCheck,
   Database,
+  FolderKanban,
   LayoutDashboard,
   MailCheck,
   Settings,
   Wrench,
 } from 'lucide-react';
 
-export type Screen = 'overview' | 'talent' | 'jobs' | 'review' | 'maintenance' | 'settings';
+export type Screen = 'overview' | 'talent' | 'jobs' | 'projects' | 'review' | 'maintenance' | 'settings';
 
 interface SidebarProps {
   activeScreen: Screen;
@@ -24,6 +25,7 @@ const navItems: Array<{
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
   { id: 'talent', label: 'Talent Pool', icon: Database },
   { id: 'jobs', label: 'Jobs & Shortlist', icon: Briefcase },
+  { id: 'projects', label: 'Projects', icon: FolderKanban },
   { id: 'review', label: 'Outreach & Review', icon: MailCheck },
   { id: 'maintenance', label: 'Maintenance', icon: Wrench },
   { id: 'settings', label: 'Settings', icon: Settings },
@@ -84,7 +86,7 @@ export default function Sidebar({ activeScreen, pendingReviewsCount, onNavigate 
         </div>
       </aside>
 
-      <nav className="fixed bottom-0 left-0 right-0 z-40 grid grid-cols-6 border-t border-slate-200 bg-white lg:hidden">
+      <nav className="fixed bottom-0 left-0 right-0 z-40 grid grid-cols-7 border-t border-slate-200 bg-white lg:hidden">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeScreen === item.id;

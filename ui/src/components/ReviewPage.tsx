@@ -54,7 +54,10 @@ function ConfirmPurgeModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
-      <div className="w-full max-w-md overflow-hidden rounded-md bg-white shadow-2xl">
+      <form
+        onSubmit={(event) => { event.preventDefault(); if (canPurge) onConfirm(); }}
+        className="w-full max-w-md overflow-hidden rounded-md bg-white shadow-2xl"
+      >
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
           <div className="flex items-center gap-3">
             <div className="rounded-md bg-rose-50 p-2 text-rose-600">
@@ -103,8 +106,7 @@ function ConfirmPurgeModal({
             Cancel
           </button>
           <button
-            type="button"
-            onClick={onConfirm}
+            type="submit"
             disabled={!canPurge}
             className="inline-flex h-10 items-center gap-2 rounded-md bg-rose-600 px-4 text-sm font-medium text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -112,7 +114,7 @@ function ConfirmPurgeModal({
             Purge permanently
           </button>
         </div>
-      </div>
+      </form>
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import json
 import hmac
+import logging
 import os
 import re
 import uuid
@@ -38,16 +39,24 @@ from core.security import anonymize_candidate_record
 from core.schemas import CandidateRecord, Identity, Profile, Compliance, Scores
 from core.time_utils import utc_now_iso
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Linnify AI Talent Pool Manager")
 
+_CORS_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,"
+        "http://localhost:5173,http://127.0.0.1:5173",
+    ).split(",")
+    if o.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000", "http://127.0.0.1:3000",
-        "http://localhost:5173", "http://127.0.0.1:5173",
-    ],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Content-Type", "Authorization", "x-api-token"],
 )
 
 
@@ -215,7 +224,8 @@ async def post_config(body: AppConfigUpdate):
             if value is not None:
                 set_provider_api_key(provider, value.strip() or None)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save config: {e}")
+        logger.exception("Failed to save config")
+        raise HTTPException(status_code=500, detail="Failed to save configuration")
     return _config_response()
 
 
@@ -224,7 +234,7 @@ class LinkedInPreviewBody(BaseModel):
 
 
 class CVPreviewBody(BaseModel):
-    resumeText: str
+    resumeText: str = Field(..., max_length=200_000)
 
 
 @app.post("/api/gemini/parse-cv")
@@ -237,7 +247,8 @@ async def parse_cv_preview(body: CVPreviewBody):
         from core.extract import extract_candidate_data
         extraction, _model_info = extract_candidate_data(text)
     except Exception as e:
-        raise HTTPException(status_code=422, detail=f"CV parsing failed: {e}")
+        logger.exception("CV parsing failed")
+        raise HTTPException(status_code=422, detail="CV parsing failed")
 
     return {
         "candidate": {
@@ -605,7 +616,8 @@ async def ingest_candidate(file: UploadFile = File(...)):
         dest.unlink(missing_ok=True)
         if isinstance(e, HTTPException):
             raise
-        raise HTTPException(status_code=422, detail=str(e))
+        logger.exception("CV ingest failed")
+        raise HTTPException(status_code=422, detail="CV ingest failed")
 
     rec = load_record(record_id)
     if not rec:
@@ -663,7 +675,8 @@ async def ingest_linkedin_candidate(body: LinkedInReingestBody):
             "status": "open",
         }])
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to ingest LinkedIn profile: {e}")
+        logger.exception("Failed to ingest LinkedIn profile")
+        raise HTTPException(status_code=500, detail="Failed to ingest LinkedIn profile")
 
     return _map_candidate(record_id, rec)
 
@@ -694,12 +707,13 @@ async def reingest_candidate(
     except HTTPException:
         dest.unlink(missing_ok=True)
         raise
-    except PermissionError as e:
+    except PermissionError:
         dest.unlink(missing_ok=True)
-        raise HTTPException(status_code=403, detail=str(e))
+        raise HTTPException(status_code=403, detail="Permission denied")
     except Exception as e:
         dest.unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail=str(e))
+        logger.exception("Re-ingest processing failed")
+        raise HTTPException(status_code=422, detail="Re-ingest processing failed")
 
     updated = load_record(record_id)
     if not updated:
@@ -742,7 +756,8 @@ async def reingest_candidate_linkedin(record_id: str, body: LinkedInReingestBody
     try:
         save_record(record_id, rec, event=event)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to persist record: {e}")
+        logger.exception("Failed to persist record")
+        raise HTTPException(status_code=500, detail="Failed to persist record")
 
     return _map_candidate(record_id, rec)
 
@@ -802,7 +817,8 @@ async def patch_candidate_status(record_id: str, body: StatusPatch):
     try:
         save_record(record_id, rec, event=event)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to persist record: {str(e)}")
+        logger.exception("Failed to persist record")
+        raise HTTPException(status_code=500, detail="Failed to persist record")
 
     return _map_candidate(record_id, rec)
 
@@ -881,7 +897,8 @@ async def delete_job(req_id: str):
     try:
         path.unlink()
     except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete job: {e}")
+        logger.exception("Failed to delete job %s", req_id)
+        raise HTTPException(status_code=500, detail="Failed to delete job")
     return {"deleted": req_id}
 
 
@@ -946,7 +963,8 @@ async def run_shortlist(req_id: str):
     try:
         result = generate_shortlist(req_id, top_n=5)
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        logger.exception("Failed to generate shortlist for %s", req_id)
+        raise HTTPException(status_code=422, detail="Failed to generate shortlist")
 
     shortlist = []
     for item in result.get("results", []):
@@ -984,7 +1002,8 @@ async def resolve_review_task(case_id: str, body: ResolveBody):
     try:
         resolve_case(case_id, resolved_by=body.reviewer, resolution=body.resolution)
     except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        logger.exception("Failed to resolve case %s", case_id)
+        raise HTTPException(status_code=422, detail="Failed to resolve case")
     return {"ok": True}
 
 
@@ -1019,7 +1038,8 @@ async def create_outreach_draft(body: OutreachDraftBody):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Outreach generation failed: {e}")
+        logger.exception("Outreach generation failed")
+        raise HTTPException(status_code=500, detail="Outreach generation failed")
 
     all_cases = get_review_queue()
     new_case = next((c for c in all_cases if c.get("case_id") == case_id), None)
@@ -1166,7 +1186,7 @@ class AgentResolveReviewParams(BaseModel):
     resolution: str = "approved"
 
 class AgentBulkRefreshParams(BaseModel):
-    ids: List[str] = Field(default_factory=list)
+    ids: List[str] = Field(default_factory=list, max_length=500)
 
 class AgentProcessIntakeParams(BaseModel):
     limit: int = Field(default=25, ge=1, le=500)
@@ -1731,8 +1751,9 @@ async def confirm_agent_action(proposal_id: str):
         _agent_event("agent_action_failed", proposal=proposal, actor="human", error=str(exc.detail))
         raise
     except Exception as exc:
+        logger.exception("Failed to execute agent action %s", proposal_id)
         _agent_event("agent_action_failed", proposal=proposal, actor="human", error=str(exc))
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=422, detail="Failed to execute agent action")
 
     data = _dump_model(result) if isinstance(result, BaseModel) else result
     _agent_event("agent_action_confirmed", proposal=proposal, actor="human", result=data)

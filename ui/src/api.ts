@@ -5,6 +5,8 @@ import {
   CandidateDetail,
   CandidatePreview,
   JobRequirement,
+  ProjectMatchCandidate,
+  ProjectProspect,
   ReviewTask,
   ShortlistCandidate,
   StaleCandidate,
@@ -271,4 +273,36 @@ export async function startCSVIngest(file: File): Promise<{ task_id: string }> {
 
 export function pollCSVIngest(taskId: string): Promise<CSVIngestProgress> {
   return request<CSVIngestProgress>(`${BASE}/intake/csv/${taskId}`);
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+export interface CreateProjectPayload {
+  title: string;
+  client?: string;
+  domain?: string;
+  brief: string;
+  requiredSkills?: string[];
+  niceToHaveSkills?: string[];
+}
+
+export function fetchProjects(): Promise<ProjectProspect[]> {
+  return request<ProjectProspect[]>(`${BASE}/projects`);
+}
+
+export function fetchProject(id: string): Promise<ProjectProspect> {
+  return request<ProjectProspect>(`${BASE}/projects/${id}`);
+}
+
+export function createProject(payload: CreateProjectPayload): Promise<ProjectProspect> {
+  return request<ProjectProspect>(`${BASE}/projects`, json('POST', payload));
+}
+
+export function runProjectMatch(projectId: string, topN = 10): Promise<ProjectMatchCandidate[]> {
+  return request<ProjectMatchCandidate[]>(
+    `${BASE}/projects/${projectId}/match?top_n=${topN}`,
+    { method: 'POST' },
+  );
 }

@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data"
 RECORDS_DIR = DATA_DIR / "candidates"
 REQUIREMENTS_DIR = DATA_DIR / "requirements"
+PROJECTS_DIR = DATA_DIR / "projects"
 INTAKE_DIR = DATA_DIR / "intake"
 QUARANTINE_DIR = DATA_DIR / "quarantine"
 LOGS_DIR = DATA_DIR / "logs"

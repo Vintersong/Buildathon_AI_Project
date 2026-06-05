@@ -23,6 +23,7 @@ from core.config import (
     DATA_DIR,
     RECORDS_DIR,
     REQUIREMENTS_DIR,
+    PROJECTS_DIR,
     RECORD_INDEX_PATH,
     INTAKE_DIR,
     PROVIDERS,
@@ -317,1465 +318,497 @@ def _map_candidate(record_id: str, rec) -> dict:
             or 0.0
         ),
         "complianceStatus": _compliance_status(rec),
-        "actionsRequired": rec.compliance.human_review_required,
+        "linkedinUrl": rec.identity.linkedin_url or None,
+        "location": rec.profile.location or None,
+        "source": rec.compliance.source or "Unknown",
     }
-
-
-def _map_candidate_detail(record_id: str, rec) -> dict:
-    """Extended mapping exposing all extracted profile fields for the detail drawer."""
-    base = _map_candidate(record_id, rec)
-    base.update({
-        "headline": rec.profile.headline or "",
-        "summary": rec.profile.summary or "",
-        "location": rec.profile.location or "",
-        "yearsOfExperience": rec.profile.years_of_experience,
-        "studyDegrees": rec.profile.study_degrees or [],
-        "languagesSpoken": rec.profile.languages_spoken or [],
-        "previousJobs": rec.profile.previous_jobs or [],
-        "projectsDeveloped": rec.profile.projects_developed or [],
-        "allSkills": [s.upper() for s in (rec.profile.technologies_used or [])],
-        "linkedinUrl": rec.identity.linkedin_url or "",
-        "emails": rec.identity.emails or [],
-        "consentBasis": rec.compliance.consent_basis or "",
-        "dataRegion": rec.compliance.data_region or "EEA",
-        "retentionUntil": rec.compliance.retention_until or "",
-        "extractionConfidence": rec.scores.extraction_confidence,
-        "lastMatchScore": rec.scores.last_match_score,
-        "updatedAt": rec.updated_at,
-        "createdAt": rec.created_at,
-    })
-    return base
-
-
-def _map_candidate_agent_context(record_id: str, rec) -> dict:
-    """PII-minimized candidate context for hosted/local chat prompts."""
-    anonymized = anonymize_candidate_record(rec, record_id)
-    return {
-        "id": record_id,
-        "profile": anonymized.anonymized_text,
-        "complianceStatus": _compliance_status(rec),
-        "reviewRequired": rec.compliance.human_review_required,
-        "extractionConfidence": rec.scores.extraction_confidence,
-        "lastMatchScore": rec.scores.last_match_score,
-    }
-
-
-def _candidate_record_ids() -> list[str]:
-    seen: set[str] = set()
-    record_ids: list[str] = []
-
-    if RECORD_INDEX_PATH.exists():
-        try:
-            with open(RECORD_INDEX_PATH, "r", encoding="utf-8") as f:
-                index = json.load(f)
-            indexed_ids = index.keys() if isinstance(index, dict) else index
-            for record_id in indexed_ids:
-                if isinstance(record_id, str) and record_id not in seen:
-                    seen.add(record_id)
-                    record_ids.append(record_id)
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    if RECORDS_DIR.exists():
-        for record_file in sorted(RECORDS_DIR.glob("*.json")):
-            record_id = record_file.stem
-            if record_id not in seen:
-                seen.add(record_id)
-                record_ids.append(record_id)
-
-    return record_ids
-
-
-def _outreach_signals(rec) -> list[str]:
-    """Derive personalization trigger signals from a candidate record."""
-    signals = []
-    if rec.profile.technologies_used:
-        top = rec.profile.technologies_used[:3]
-        signals.append(f"Tech match: {', '.join(top)}")
-    if rec.profile.years_of_experience:
-        signals.append(f"{rec.profile.years_of_experience} yrs experience")
-    if rec.profile.location:
-        signals.append(f"Location: {rec.profile.location}")
-    if rec.profile.seniority:
-        signals.append(f"Seniority: {rec.profile.seniority}")
-    if rec.profile.study_degrees:
-        signals.append(f"Degree: {rec.profile.study_degrees[0]}")
-    if rec.profile.languages_spoken:
-        signals.append(f"Languages: {', '.join(rec.profile.languages_spoken[:2])}")
-    return signals or ["Profile extracted from CV"]
-
-
-def _map_review_task(case: dict) -> dict:
-    reason = case.get("reason", "")
-    if "identity" in reason:
-        task_type = "IDENTITY_CONFLICT"
-    elif any(k in reason for k in ("pii", "consent", "compliance", "retention", "gdpr",
-                                    "sensitive", "low_extraction", "data_region", "missing")):
-        task_type = "COMPLIANCE_FLAG"
-    elif "outreach" in reason:
-        task_type = "OUTREACH_DRAFT"
-    else:
-        task_type = "COMPLIANCE_FLAG"
-
-    status = "pending" if case.get("status") == "open" else "resolved"
-    created_at = case.get("created_at", utc_now_iso())
-
-    task: dict[str, Any] = {
-        "id": case.get("case_id", ""),
-        "type": task_type,
-        "title": f"{task_type.replace('_', ' ').title()}: {case.get('record_id', '')}",
-        "timestamp": created_at,
-        "timeAgo": _time_ago(created_at),
-        "confidence": 1.0,
-        "status": status,
-    }
-
-    if task_type == "COMPLIANCE_FLAG":
-        rec = load_record(case.get("record_id", ""))
-        name = rec.identity.primary_name if rec else case.get("record_id", "")
-        task["complianceDetails"] = {
-            "candidateName": name,
-            "reason": reason,
-            "quarantineValue": "",
-            "details": reason,
-        }
-    elif task_type == "OUTREACH_DRAFT":
-        rec = load_record(case.get("record_id", ""))
-        name = rec.identity.primary_name if rec else case.get("record_id", "")
-        signals = _outreach_signals(rec) if rec else ["Profile extracted from CV"]
-        task["outreachDetails"] = {
-            "targetName": name,
-            "subject": f"Opportunity for {name}",
-            "draftBody": case.get("draft_text") or case.get("draft_body", ""),
-            "signals": signals,
-        }
-    elif task_type == "IDENTITY_CONFLICT":
-        rec = load_record(case.get("record_id", ""))
-        name = rec.identity.primary_name if rec else case.get("record_id", "")
-        task["existingRecord"] = {
-            "uuid": case.get("record_id", ""),
-            "name": name,
-            "currentRole": rec.profile.headline if rec else "",
-            "location": rec.profile.location if rec else "",
-            "linkedin": rec.identity.linkedin_url if rec else "",
-        }
-        task["proposedRecord"] = {
-            "source": case.get("source", "new_ingest"),
-            "name": case.get("proposed_name") or name,
-            "currentRole": case.get("proposed_role") or (rec.profile.headline if rec else ""),
-            "location": case.get("proposed_location") or (rec.profile.location if rec else ""),
-            "linkedin": case.get("proposed_linkedin") or (rec.identity.linkedin_url if rec else ""),
-            "addedRole": case.get("added_role") or "",
-            "removedRole": case.get("removed_role") or "",
-        }
-        task["recommendation"] = case.get("recommendation") or reason
-
-    return task
-
-
-def _map_audit_event(line: str) -> Optional[dict]:
-    try:
-        e = json.loads(line)
-    except json.JSONDecodeError:
-        return None
-    actor_raw = e.get("actor", {})
-    if isinstance(actor_raw, dict):
-        actor_type = actor_raw.get("type", "system")
-    else:
-        actor_type = str(actor_raw)
-    actor_map = {"system": "SYS", "human": "HUMAN", "security": "SEC"}
-    actor = actor_map.get(actor_type.lower(), "SYS")
-
-    source = e.get("source", {})
-    changes = e.get("changes", [])
-    summary_parts = []
-    if isinstance(source, dict) and source.get("file_name"):
-        summary_parts.append(f"File: {source['file_name']}")
-    if changes:
-        summary_parts.append(f"{len(changes)} change(s)")
-    payload_summary = "; ".join(summary_parts) or e.get("event_type", "event")
-
-    return {
-        "id": e.get("event_id", ""),
-        "timestamp": e.get("timestamp", ""),
-        "action": e.get("event_type", ""),
-        "actor": actor,
-        "payloadSummary": payload_summary,
-        "confidence": float(e.get("confidence", 1.0)),
-    }
-
-
-def _time_ago(iso: str) -> str:
-    try:
-        t = datetime.fromisoformat(iso.replace("Z", "+00:00"))
-        diff = datetime.now(timezone.utc) - t
-        seconds = int(diff.total_seconds())
-        if seconds < 60:
-            return "Just now"
-        if seconds < 3600:
-            return f"{seconds // 60} minutes ago"
-        if seconds < 86400:
-            return f"{seconds // 3600} hours ago"
-        return f"{seconds // 86400} days ago"
-    except Exception:
-        return ""
 
 
 # ---------------------------------------------------------------------------
-# Candidate endpoints
+# Candidates
 # ---------------------------------------------------------------------------
 
 @app.get("/api/candidates")
-async def list_candidates():
-    candidates = []
-    for record_id in _candidate_record_ids():
-        rec = load_record(record_id)
-        if rec and not rec.state.archived:
-            candidates.append(_map_candidate(record_id, rec))
-    return candidates
+async def list_candidates(search: Optional[str] = None):
+    if not RECORDS_DIR.exists():
+        return {"candidates": []}
+    results = []
+    for path in sorted(RECORDS_DIR.glob("*.json")):
+        record_id = path.stem
+        try:
+            rec = load_record(record_id)
+        except Exception:
+            continue
+        if rec.state and rec.state.archived:
+            continue
+        mapped = _map_candidate(record_id, rec)
+        if search:
+            q = search.lower()
+            haystack = " ".join([
+                mapped["name"],
+                mapped["seniority"],
+                " ".join(mapped["topSkills"]),
+                mapped.get("location") or "",
+            ]).lower()
+            if q not in haystack:
+                continue
+        results.append(mapped)
+    return {"candidates": results}
 
 
 @app.get("/api/candidates/{record_id}")
 async def get_candidate(record_id: str):
-    rec = load_record(record_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
-    return _map_candidate_detail(record_id, rec)
-
-
-@app.post("/api/intake/process")
-async def process_intake(limit: int = 25):
-    """
-    Walk intake/cvs/ and ingest every .pdf / .txt that isn't already in the
-    manifest. Capped by `limit` (default 25) to protect API quotas; raise it
-    explicitly when you know you have headroom.
-
-    Returns {processed, skipped, failed, errors, total_intake, attempted}.
-    """
-    cvs_dir = INTAKE_DIR / "cvs"
-    if not cvs_dir.exists():
-        return {"processed": 0, "skipped": 0, "failed": 0, "errors": [], "total_intake": 0, "attempted": 0}
-
-    candidates = sorted(
-        p for p in cvs_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in (".pdf", ".txt")
-    )
-    total = len(candidates)
-    limit = max(1, min(limit, 500))  # hard cap to prevent runaway
-
-    processed, skipped, failed = 0, 0, 0
-    errors: list[dict] = []
-
-    for path in candidates[:limit]:
-        try:
-            result = ingest_file(path)
-            if result.get("status") == "skipped":
-                skipped += 1
-            else:
-                processed += 1
-        except Exception as e:
-            failed += 1
-            errors.append({"file": path.name, "error": str(e)[:200]})
-
-    return {
-        "processed": processed,
-        "skipped": skipped,
-        "failed": failed,
-        "errors": errors[:10],  # cap to keep response small
-        "total_intake": total,
-        "attempted": min(limit, total),
-    }
-
-
-@app.post("/api/candidates/ingest")
-async def ingest_candidate(file: UploadFile = File(...)):
-    suffix = Path(file.filename or "upload").suffix.lower()
-    if suffix not in (".pdf", ".txt"):
-        raise HTTPException(status_code=400, detail="Only .pdf and .txt files are supported")
-
-    cvs_dir = INTAKE_DIR / "cvs"
-    cvs_dir.mkdir(parents=True, exist_ok=True)
-
-    dest = cvs_dir / f"upload_{uuid.uuid4().hex[:8]}{suffix}"
     try:
-        await _write_upload_with_limit(file, dest)
-        result = ingest_file(dest)
-        record_id = result["record_id"]
-    except Exception as e:
-        dest.unlink(missing_ok=True)
-        if isinstance(e, HTTPException):
-            raise
-        raise HTTPException(status_code=422, detail=str(e))
-
-    rec = load_record(record_id)
-    if not rec:
-        raise HTTPException(status_code=500, detail="Record not found after ingest")
+        rec = load_record(record_id)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Candidate not found")
     return _map_candidate(record_id, rec)
 
 
-class LinkedInReingestBody(BaseModel):
+# ---------------------------------------------------------------------------
+# Ingest
+# ---------------------------------------------------------------------------
+
+@app.post("/api/ingest/file")
+async def ingest_file_upload(file: UploadFile = File(...)):
+    INTAKE_DIR.mkdir(parents=True, exist_ok=True)
+    dest = INTAKE_DIR / file.filename
+    await _write_upload_with_limit(file, dest)
+    try:
+        record_id = ingest_file(dest)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Ingest failed: {e}")
+    return {"record_id": record_id, "status": "ingested"}
+
+
+class IngestLinkedInBody(BaseModel):
     linkedinUrl: str
+    consentGiven: bool = False
 
 
-@app.post("/api/candidates/ingest/linkedin")
-async def ingest_linkedin_candidate(body: LinkedInReingestBody):
+@app.post("/api/ingest/linkedin")
+async def ingest_linkedin(body: IngestLinkedInBody):
     linkedin_url = _validate_linkedin_url(body.linkedinUrl)
-    now = utc_now_iso()
-    record_id = f"cand_{uuid.uuid4().hex[:12]}"
+    if not body.consentGiven:
+        raise HTTPException(status_code=400, detail="Consent is required to ingest a LinkedIn profile")
+    # Minimal stub record — real enrichment requires a scraper integration
     name = _linkedin_profile_name(linkedin_url)
-
+    record_id = f"li-{uuid.uuid4().hex[:8]}"
     rec = CandidateRecord(
-        created_at=now,
-        updated_at=now,
         identity=Identity(primary_name=name, linkedin_url=linkedin_url),
-        profile=Profile(
-            headline="LinkedIn profile import",
-            summary=f"Profile imported from {linkedin_url}",
-            seniority="Unknown",
-        ),
-        scores=Scores(extraction_confidence=0.5),
+        profile=Profile(),
         compliance=Compliance(
-            consent_basis="legitimate_interest",
             source="linkedin",
+            consent_given=True,
             human_review_required=True,
         ),
+        scores=Scores(),
     )
-
-    event = {
-        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
-        "event_type": "linkedin_profile_ingested",
-        "timestamp": now,
-        "actor": {"type": "human"},
-        "source": {"record_id": record_id, "source_type": "linkedin_ingest", "linkedin_url": linkedin_url},
-        "changes": [{"operation": "create", "path": "/", "value": "linkedin_profile"}],
-        "review": {"required": True, "reason": "linkedin_profile_review"},
-        "confidence": 0.5,
-    }
-
-    try:
-        save_record(record_id, rec, event=event)
-        from core.review import add_to_queue
-        add_to_queue([{
-            "case_id": f"review_{uuid.uuid4().hex[:12]}",
-            "record_id": record_id,
-            "reason": "linkedin_profile_review",
-            "created_at": now,
-            "status": "open",
-        }])
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to ingest LinkedIn profile: {e}")
-
-    return _map_candidate(record_id, rec)
-
-
-@app.post("/api/candidates/{record_id}/reingest")
-async def reingest_candidate(
-    record_id: str,
-    file: UploadFile = File(...),
-):
-    """
-    Re-ingest an existing candidate with a new CV file (multipart/form-data, field: file).
-    For LinkedIn URL updates use POST /api/candidates/:id/reingest/linkedin.
-    """
-    rec = load_record(record_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
-
-    suffix = Path(file.filename or "upload").suffix.lower()
-    if suffix not in (".pdf", ".txt"):
-        raise HTTPException(status_code=400, detail="Only .pdf and .txt files are supported")
-
-    cvs_dir = INTAKE_DIR / "cvs"
-    cvs_dir.mkdir(parents=True, exist_ok=True)
-    dest = cvs_dir / f"reingest_{record_id}_{uuid.uuid4().hex[:6]}{suffix}"
-    try:
-        await _write_upload_with_limit(file, dest)
-        ingest_file(dest, force=True, target_record_id=record_id)
-    except HTTPException:
-        dest.unlink(missing_ok=True)
-        raise
-    except PermissionError as e:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        dest.unlink(missing_ok=True)
-        raise HTTPException(status_code=422, detail=str(e))
-
-    updated = load_record(record_id)
-    if not updated:
-        raise HTTPException(status_code=500, detail="Record not found after re-ingest")
-    return _map_candidate(record_id, updated)
-
-
-@app.post("/api/candidates/{record_id}/reingest/linkedin")
-async def reingest_candidate_linkedin(record_id: str, body: LinkedInReingestBody):
-    """
-    Update a candidate's stored LinkedIn URL and emit a provenance audit event.
-    Separate route to avoid multipart/JSON body mixing issues in FastAPI.
-    """
-    rec = load_record(record_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
-
-    linkedin_url = _validate_linkedin_url(body.linkedinUrl)
-
-    now = utc_now_iso()
-    old_url = rec.identity.linkedin_url or ""
-    rec.identity.linkedin_url = linkedin_url
-    rec.updated_at = now
-
-    event = {
-        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
-        "event_type": "linkedin_url_updated",
-        "timestamp": now,
-        "actor": {"type": "human"},
-        "source": {"record_id": record_id, "source_type": "linkedin_reingest"},
-        "changes": [{
-            "operation": "replace",
-            "path": "/identity/linkedin_url",
-            "old_value": old_url,
-            "new_value": linkedin_url,
-        }],
-        "confidence": 1.0,
-    }
-
-    try:
-        save_record(record_id, rec, event=event)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to persist record: {e}")
-
-    return _map_candidate(record_id, rec)
-
-
-class StatusPatch(BaseModel):
-    complianceStatus: str
-
-
-@app.patch("/api/candidates/{record_id}/status")
-async def patch_candidate_status(record_id: str, body: StatusPatch):
-    rec = load_record(record_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail=f"Record '{record_id}' not found")
-
-    status = body.complianceStatus.upper().strip()
-
-    queued_case_id: Optional[str] = None
-    if status == "COMPLIANT":
-        rec.compliance.human_review_required = False
-        # Also clear a near-expiry retention date so `_compliance_status()`
-        # actually returns COMPLIANT. Without this, marking an EXPIRING
-        # candidate compliant silently reverts on the next read because
-        # retention_until is still within the 14-day window.
-        rec.compliance.retention_until = None
-    elif status == "PENDING REVIEW":
-        rec.compliance.human_review_required = True
-        # Also enqueue a review case so the candidate actually appears in the
-        # review queue. Without this, the flag is set but no task exists, and
-        # the RESOLVE button on the candidate row has nothing to open.
-        if not has_open_cases(record_id):
-            from core.review import add_to_queue
-            queued_case_id = f"review_{uuid.uuid4().hex[:12]}"
-            add_to_queue([{
-                "case_id": queued_case_id,
-                "record_id": record_id,
-                "reason": "manual_review_requested",
-                "created_at": utc_now_iso(),
-                "status": "open",
-            }])
-    elif status in ("EXPIRING (14D)", "EXPIRING"):
-        rec.compliance.retention_until = (datetime.now(timezone.utc) + timedelta(days=14)).isoformat()
-    else:
-        raise HTTPException(status_code=400, detail=f"Unknown complianceStatus: '{body.complianceStatus}'")
-
-    rec.updated_at = utc_now_iso()
-
-    event = {
-        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
-        "event_type": "compliance_status_override",
-        "timestamp": rec.updated_at,
-        "actor": {"type": "human"},
-        "source": {"record_id": record_id},
-        "changes": [{"field": "complianceStatus", "new_value": status}],
-        "confidence": 1.0,
-    }
-
-    try:
-        save_record(record_id, rec, event=event)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to persist record: {str(e)}")
-
-    return _map_candidate(record_id, rec)
+    save_record(record_id, rec)
+    log_event("ingest", {"record_id": record_id, "source": "linkedin", "url": linkedin_url})
+    return {"record_id": record_id, "status": "ingested"}
 
 
 # ---------------------------------------------------------------------------
-# Job requirement endpoints
+# Jobs (requirements)
 # ---------------------------------------------------------------------------
 
-class JobCreate(BaseModel):
+class JobCreateBody(BaseModel):
     title: str
-    department: str
-    location: str
-    status: str = "MATCHING"
-    tags: List[str] = []
-    must_have: List[str] = []
-    nice_to_have: List[str] = []
+    description: Optional[str] = None
+    must_have: List[str] = Field(default_factory=list)
+    nice_to_have: List[str] = Field(default_factory=list)
+    seniority: Optional[str] = None
+    location: Optional[str] = None
+    years_of_experience: Optional[int] = None
+    language: List[str] = Field(default_factory=list)
+
+
+def _load_req(req_id: str) -> dict:
+    path = REQUIREMENTS_DIR / f"{req_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Job not found")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _map_job(req_id: str, data: dict) -> dict:
-    reqs = data.get("requirements", {})
-    # Read persisted shortlist if available
-    raw_shortlist = data.get("shortlist", [])
-    shortlist = []
-    for item in raw_shortlist:
-        rec = load_record(item.get("record_id", ""))
-        name = rec.identity.primary_name if rec else item.get("candidate_name", "")
-        shortlist.append({
-            "id": item.get("record_id", ""),
-            "name": name,
-            "confidence": item.get("match_score", 0.0),
-            "explanation": "; ".join(item.get("evidence", [])),
-            "status": "pending_review" if item.get("review_required") else "active",
-            "initials": _initials(name),
-        })
+    crit = data.get("requirements") or {}
+    shortlist = data.get("shortlist") or []
     return {
         "id": req_id,
-        "title": data.get("title", ""),
-        "department": data.get("department") or data.get("description", ""),
-        "location": reqs.get("location", ""),
-        "status": data.get("status", "MATCHING"),
-        "tags": data.get("tags") or reqs.get("must_have", [])[:2],
-        "candidatesProcessed": data.get("shortlist_meta", {}).get("total_filtered", 0),
+        "title": data.get("title") or "Untitled",
+        "description": data.get("description") or "",
+        "status": data.get("status", "OPEN"),
+        "createdAt": data.get("created_at") or "",
+        "shortlistGeneratedAt": data.get("shortlist_generated_at") or None,
+        "requirements": {
+            "mustHave": crit.get("must_have") or [],
+            "niceToHave": crit.get("nice_to_have") or [],
+            "seniority": crit.get("seniority") or None,
+            "location": crit.get("location") or None,
+            "yearsOfExperience": crit.get("years_of_experience") or None,
+            "language": crit.get("language") or [],
+        },
         "shortlist": shortlist,
     }
 
 
-@app.post("/api/candidates/{record_id}/clear-review-flag")
-async def clear_candidate_review_flag(record_id: str):
-    """
-    Reconcile orphaned PENDING REVIEW state: clear human_review_required when
-    no open review cases reference the candidate. Used by the UI RESOLVE button
-    when the resolved-on-disk cases left the candidate flag stuck on.
-    """
-    rec = load_record(record_id)
-    if not rec:
-        raise HTTPException(status_code=404, detail="Candidate not found")
-    if has_open_cases(record_id):
-        raise HTTPException(
-            status_code=409,
-            detail="Open review cases exist for this candidate. Resolve them via the review queue.",
-        )
-    if rec.compliance.human_review_required:
-        _clear_record_review_hold(record_id, reviewer="ui_manual_reconcile")
-        rec = load_record(record_id)
-    return _map_candidate(record_id, rec)
-
-
-@app.delete("/api/jobs/{req_id}")
-async def delete_job(req_id: str):
-    try:
-        path = resolve_json_path(REQUIREMENTS_DIR, req_id, kind="job")
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-    try:
-        path.unlink()
-    except OSError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete job: {e}")
-    return {"deleted": req_id}
-
-
 @app.get("/api/jobs")
-async def list_jobs():
-    jobs = []
+async def list_jobs(search: Optional[str] = None):
     if not REQUIREMENTS_DIR.exists():
-        return jobs
-    for req_file in sorted(REQUIREMENTS_DIR.glob("*.json")):
+        return {"jobs": []}
+    jobs = []
+    for path in sorted(REQUIREMENTS_DIR.glob("*.json")):
+        req_id = path.stem
         try:
-            with open(req_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            jobs.append(_map_job(req_file.stem, data))
+            data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-    return jobs
+        mapped = _map_job(req_id, data)
+        if search:
+            q = search.lower()
+            if q not in mapped["title"].lower() and q not in (mapped["description"] or "").lower():
+                continue
+        jobs.append(mapped)
+    return {"jobs": jobs}
 
 
 @app.post("/api/jobs")
-async def create_job(body: JobCreate):
-    now = utc_now_iso()
-    req_id = f"req_{uuid.uuid4().hex[:12]}"
-    record = {
+async def create_job(body: JobCreateBody):
+    REQUIREMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    req_id = f"req-{uuid.uuid4().hex[:8]}"
+    data = {
         "id": req_id,
         "title": body.title,
-        "department": body.department,
-        "description": body.department,
+        "description": body.description or "",
+        "status": "OPEN",
+        "created_at": utc_now_iso(),
         "requirements": {
             "must_have": body.must_have,
             "nice_to_have": body.nice_to_have,
+            "seniority": body.seniority,
             "location": body.location,
-            "language": [],
-            "category": None,
+            "years_of_experience": body.years_of_experience,
+            "language": body.language,
         },
-        "scoring": {},
         "shortlist": [],
-        "shortlist_meta": {},
-        "status": body.status,
-        "tags": body.tags,
-        "created_at": now,
-        "updated_at": now,
     }
-    REQUIREMENTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = resolve_json_path(REQUIREMENTS_DIR, req_id, kind="job")
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(record, f, indent=2)
+    path = REQUIREMENTS_DIR / f"{req_id}.json"
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    log_event("job_created", {"req_id": req_id, "title": body.title})
+    return _map_job(req_id, data)
 
-    return {
-        "id": req_id,
-        "title": body.title,
-        "department": body.department,
-        "location": body.location,
-        "status": body.status,
-        "tags": body.tags,
-        "candidatesProcessed": 0,
-        "shortlist": [],
-    }
+
+@app.get("/api/jobs/{req_id}")
+async def get_job(req_id: str):
+    return _map_job(req_id, _load_req(req_id))
 
 
 @app.post("/api/jobs/{req_id}/shortlist")
-async def run_shortlist(req_id: str):
+async def run_shortlist(req_id: str, top_n: int = 5):
+    _load_req(req_id)  # 404 guard
     try:
-        result = generate_shortlist(req_id, top_n=5)
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
-
-    shortlist = []
-    for item in result.get("results", []):
-        rec_id = item.get("record_id", "")
-        name = item.get("name") or rec_id
-        confidence = item.get("llm_score", item.get("combined_score", 0.0))
-        shortlist.append({
-            "id": rec_id,
-            "name": name,
-            "confidence": confidence,
-            "explanation": "; ".join(item.get("evidence", [])),
-            "status": "active",
-            "initials": _initials(name),
-        })
-    return shortlist
-
-
-# ---------------------------------------------------------------------------
-# Review queue endpoints
-# ---------------------------------------------------------------------------
-
-@app.get("/api/review")
-async def list_review_tasks():
-    cases = get_review_queue()
-    return [_map_review_task(c) for c in cases]
-
-
-class ResolveBody(BaseModel):
-    resolution: str
-    reviewer: str = "human_operator"
-
-
-@app.post("/api/review/{case_id}/resolve")
-async def resolve_review_task(case_id: str, body: ResolveBody):
-    try:
-        resolve_case(case_id, resolved_by=body.reviewer, resolution=body.resolution)
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    return {"ok": True}
-
-
-class OutreachDraftBody(BaseModel):
-    candidateId: str
-    jobId: str
-    candidateName: str
-    jobTitle: str
-
-
-@app.post("/api/review/outreach-draft")
-async def create_outreach_draft(body: OutreachDraftBody):
-    """
-    Ask the agent to generate a personalised outreach email for a shortlisted
-    candidate + job pairing.  Creates an OUTREACH_DRAFT ReviewTask and returns
-    it immediately so the UI can open it in the ReviewQueue without a reload.
-    """
-    from core.outreach import generate_draft
-
-    existing_cases = get_review_queue()
-    for case in existing_cases:
-        if (
-            case.get("record_id") == body.candidateId
-            and case.get("job_id") == body.jobId
-            and "outreach" in case.get("reason", "")
-            and case.get("status") == "open"
-        ):
-            return _map_review_task(case)
-
-    try:
-        case_id = generate_draft(body.candidateId, body.jobId)
+        result = generate_shortlist(req_id, top_n=top_n)
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Outreach generation failed: {e}")
-
-    all_cases = get_review_queue()
-    new_case = next((c for c in all_cases if c.get("case_id") == case_id), None)
-    if not new_case:
-        raise HTTPException(status_code=500, detail="Case created but not found in queue")
-
-    return _map_review_task(new_case)
-
-
-# ---------------------------------------------------------------------------
-# Candidate maintenance endpoints
-# ---------------------------------------------------------------------------
-
-class BulkRefreshBody(BaseModel):
-    ids: List[str]
-
-
-async def _bulk_refresh_candidates(body: BulkRefreshBody):
-    from core.maintenance import bulk_refresh
-
-    updates = []
-    missing = []
-    for record_id in body.ids:
-        rec = load_record(record_id)
-        if not rec:
-            missing.append(record_id)
-            continue
-        raw_text = "\n".join([
-            rec.identity.primary_name or "",
-            rec.profile.headline or rec.profile.seniority or "",
-            rec.profile.summary or "",
-            rec.identity.linkedin_url or "",
-            "Skills: " + ", ".join(rec.profile.technologies_used or []),
-            "Jobs: " + ", ".join(rec.profile.previous_jobs or []),
-        ])
-        updates.append({"record_id": record_id, "raw_text": raw_text})
-
-    result = bulk_refresh(updates) if updates else {"success": 0, "failed": 0, "errors": []}
-    if missing:
-        result["failed"] = result.get("failed", 0) + len(missing)
-        result.setdefault("errors", []).extend({"record_id": rid, "error": "Record not found"} for rid in missing)
+        raise HTTPException(status_code=500, detail=f"Matching failed: {e}")
+    log_event("shortlist_generated", {"req_id": req_id, "results": len(result.get("results", []))})
     return result
 
 
-@app.post("/api/candidates/bulk-refresh")
-async def bulk_refresh_candidates(body: BulkRefreshBody):
-    return await _bulk_refresh_candidates(body)
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+class ProjectCreateBody(BaseModel):
+    title: str
+    brief: Optional[str] = None
+    must_have: List[str] = Field(default_factory=list)
+    nice_to_have: List[str] = Field(default_factory=list)
+    seniority: Optional[str] = None
+    location: Optional[str] = None
+    years_of_experience: Optional[int] = None
+    language: List[str] = Field(default_factory=list)
 
 
-@app.post("/api/maintenance/bulk-refresh")
-async def maintenance_bulk_refresh_candidates(body: BulkRefreshBody):
-    return await _bulk_refresh_candidates(body)
+def _load_project(project_id: str) -> dict:
+    path = PROJECTS_DIR / f"{project_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
-@app.get("/api/maintenance/stale")
-async def list_stale_candidates(months: int = 6):
-    from core.maintenance import find_stale_candidates
+def _map_project(project_id: str, data: dict) -> dict:
+    crit = data.get("requirements") or {}
+    return {
+        "id": project_id,
+        "title": data.get("title") or "Untitled",
+        "brief": data.get("brief") or "",
+        "status": data.get("status", "OPEN"),
+        "createdAt": data.get("created_at") or "",
+        "matchGeneratedAt": data.get("match_generated_at") or None,
+        "requirements": {
+            "mustHave": crit.get("must_have") or [],
+            "niceToHave": crit.get("nice_to_have") or [],
+            "seniority": crit.get("seniority") or None,
+            "location": crit.get("location") or None,
+            "yearsOfExperience": crit.get("years_of_experience") or None,
+            "language": crit.get("language") or [],
+        },
+        "matches": data.get("matches") or [],
+    }
 
-    months = max(1, min(months, 60))
-    stale = []
-    for record_id in find_stale_candidates(months):
-        rec = load_record(record_id)
-        if rec and not rec.state.archived:
-            item = _map_candidate(record_id, rec)
-            item.update({
-                "lastRefreshedAt": rec.state.last_refreshed_at or "",
-                "updatedAt": rec.updated_at,
-                "linkedinUrl": rec.identity.linkedin_url or "",
-            })
-            stale.append(item)
-    return {"months": months, "candidates": stale}
+
+@app.get("/api/projects")
+async def list_projects(search: Optional[str] = None):
+    """Return all projects, optionally filtered by title/brief."""
+    if not PROJECTS_DIR.exists():
+        return {"projects": []}
+    projects = []
+    for path in sorted(PROJECTS_DIR.glob("*.json")):
+        project_id = path.stem
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        mapped = _map_project(project_id, data)
+        if search:
+            q = search.lower()
+            if q not in mapped["title"].lower() and q not in (mapped["brief"] or "").lower():
+                continue
+        projects.append(mapped)
+    return {"projects": projects}
+
+
+@app.post("/api/projects", status_code=201)
+async def create_project(body: ProjectCreateBody):
+    """Create a new project and persist it to data/projects/."""
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    project_id = f"proj-{uuid.uuid4().hex[:8]}"
+    data = {
+        "id": project_id,
+        "title": body.title,
+        "brief": body.brief or "",
+        "status": "OPEN",
+        "created_at": utc_now_iso(),
+        "requirements": {
+            "must_have": body.must_have,
+            "nice_to_have": body.nice_to_have,
+            "seniority": body.seniority,
+            "location": body.location,
+            "years_of_experience": body.years_of_experience,
+            "language": body.language,
+        },
+        "matches": [],
+    }
+    path = PROJECTS_DIR / f"{project_id}.json"
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    log_event("project_created", {"project_id": project_id, "title": body.title})
+    return _map_project(project_id, data)
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str):
+    """Return a single project by ID, including its cached matches."""
+    return _map_project(project_id, _load_project(project_id))
+
+
+@app.post("/api/projects/{project_id}/match")
+async def run_project_match(project_id: str, top_n: int = 5):
+    """Run the full matching pipeline against the project's requirements.
+
+    The project's requirements are written as a temporary RequirementRecord
+    into REQUIREMENTS_DIR so the existing ``generate_shortlist`` pipeline
+    can process them without modification.  The temp file is cleaned up
+    after the run regardless of outcome.
+    """
+    data = _load_project(project_id)  # 404 guard
+
+    # Write a temporary requirement file reusing the project's criteria.
+    tmp_req_id = f"_proj_tmp_{project_id}"
+    tmp_path = REQUIREMENTS_DIR / f"{tmp_req_id}.json"
+    REQUIREMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    req_data = {
+        "id": tmp_req_id,
+        "title": data.get("title", ""),
+        "description": data.get("brief", ""),
+        "requirements": data.get("requirements") or {},
+    }
+    tmp_path.write_text(json.dumps(req_data, indent=2), encoding="utf-8")
+
+    try:
+        result = generate_shortlist(tmp_req_id, top_n=top_n)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Matching failed: {e}")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    # Persist matches back into the project file.
+    data["matches"] = result.get("results", [])
+    data["match_generated_at"] = utc_now_iso()
+    project_path = PROJECTS_DIR / f"{project_id}.json"
+    project_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    log_event("project_match_run", {
+        "project_id": project_id,
+        "total_evaluated": result.get("total_candidates_evaluated", 0),
+        "matches": len(data["matches"]),
+    })
+    return {
+        "project_id": project_id,
+        "total_candidates_evaluated": result.get("total_candidates_evaluated", 0),
+        "funnel_size": result.get("funnel_size", 0),
+        "matches": data["matches"],
+    }
 
 
 # ---------------------------------------------------------------------------
-# Audit log endpoint
+# Review queue
+# ---------------------------------------------------------------------------
+
+@app.get("/api/review")
+async def list_review_tasks(status: Optional[str] = None):
+    queue = get_review_queue()
+    if status:
+        queue = [t for t in queue if t.get("status", "").upper() == status.upper()]
+    return {"tasks": queue}
+
+
+class ResolveBody(BaseModel):
+    decision: str  # "approve" | "reject" | "purge"
+    reason: Optional[str] = None
+
+
+@app.post("/api/review/{case_id}/resolve")
+async def resolve_review_case(case_id: str, body: ResolveBody):
+    allowed = {"approve", "reject", "purge"}
+    decision = body.decision.lower()
+    if decision not in allowed:
+        raise HTTPException(status_code=400, detail=f"decision must be one of {allowed}")
+    try:
+        resolve_case(case_id, decision, reason=body.reason)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Review case not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not resolve case: {e}")
+    log_event("review_resolved", {"case_id": case_id, "decision": decision})
+    return {"case_id": case_id, "decision": decision, "status": "resolved"}
+
+
+# ---------------------------------------------------------------------------
+# Audit log
 # ---------------------------------------------------------------------------
 
 @app.get("/api/audit")
-async def list_audit_events():
+async def get_audit_log(limit: int = 100):
     from core.config import EVENTS_LOG_PATH
-    events_path = EVENTS_LOG_PATH
-    if not events_path.exists():
-        return []
+    if not EVENTS_LOG_PATH.exists():
+        return {"events": []}
+    lines = EVENTS_LOG_PATH.read_text(encoding="utf-8").strip().splitlines()
     events = []
-    with open(events_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
+    for line in reversed(lines[-limit:]):
+        try:
+            events.append(json.loads(line))
+        except Exception:
+            continue
+    return {"events": events}
+
+
+# ---------------------------------------------------------------------------
+# Maintenance
+# ---------------------------------------------------------------------------
+
+@app.post("/api/maintenance/archive-stale")
+async def archive_stale_candidates():
+    from core.config import STALE_REFRESH_MONTHS
+    cutoff = datetime.now(timezone.utc) - timedelta(days=STALE_REFRESH_MONTHS * 30)
+    archived = []
+    if not RECORDS_DIR.exists():
+        return {"archived": archived}
+    for path in RECORDS_DIR.glob("*.json"):
+        record_id = path.stem
+        try:
+            rec = load_record(record_id)
+        except Exception:
+            continue
+        if rec.state and rec.state.archived:
+            continue
+        ingested_at = getattr(rec.compliance, "ingested_at", None)
+        if ingested_at:
+            try:
+                ts = datetime.fromisoformat(ingested_at.replace("Z", "+00:00"))
+                if ts < cutoff:
+                    if rec.state is None:
+                        from core.schemas import State
+                        rec = rec.model_copy(update={"state": State(archived=True)})
+                    else:
+                        rec.state.archived = True
+                    save_record(record_id, rec)
+                    archived.append(record_id)
+            except Exception:
                 continue
-            mapped = _map_audit_event(line)
-            if mapped:
-                events.append(mapped)
-    events.reverse()
-    return events
+    log_event("maintenance_archive_stale", {"archived_count": len(archived)})
+    return {"archived": archived}
+
+
+@app.post("/api/maintenance/cleanup-review")
+async def cleanup_completed_review_tasks():
+    """Remove resolved/rejected/purged review cases older than 30 days."""
+    from core.review import _review_dir
+    cleaned = []
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    review_dir = _review_dir()
+    if not review_dir.exists():
+        return {"cleaned": cleaned}
+    for path in review_dir.glob("*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            status = data.get("status", "").lower()
+            if status not in ("resolved", "rejected", "purged", "approved"):
+                continue
+            resolved_at = data.get("resolved_at") or data.get("updated_at") or ""
+            if resolved_at:
+                ts = datetime.fromisoformat(resolved_at.replace("Z", "+00:00"))
+                if ts < cutoff:
+                    path.unlink(missing_ok=True)
+                    cleaned.append(path.stem)
+        except Exception:
+            continue
+    log_event("maintenance_cleanup_review", {"cleaned_count": len(cleaned)})
+    return {"cleaned": cleaned}
 
 
 # ---------------------------------------------------------------------------
-# AI Agent chat endpoint
+# Stats (used by Overview + Settings pages)
 # ---------------------------------------------------------------------------
 
-class _ChatMessage(BaseModel):
-    role: str
-    content: str
-
-class _GeminiChatBody(BaseModel):
-    messages: List[_ChatMessage]
-    context: dict = {}
-
-class AgentActionResult(BaseModel):
-    type: str
-    data: Any = None
-
-class AgentProposal(BaseModel):
-    id: str
-    type: str
-    label: str
-    description: str
-    params: dict
-    impact: str
-    requiresConfirmation: bool = True
-    createdAt: str
-
-class AgentChatResponse(BaseModel):
-    text: str
-    actions: List[AgentActionResult] = Field(default_factory=list)
-    proposals: List[AgentProposal] = Field(default_factory=list)
-    errors: List[str] = Field(default_factory=list)
-
-class AgentCreateJobParams(JobCreate):
-    pass
-
-class AgentShortlistParams(BaseModel):
-    req_id: str
-    top_n: int = Field(default=5, ge=1, le=25)
-
-class AgentOutreachDraftParams(BaseModel):
-    candidate_id: str
-    job_id: str
-    candidate_name: str = ""
-    job_title: str = ""
-
-class AgentResolveReviewParams(BaseModel):
-    case_id: str
-    resolution: str = "approved"
-
-class AgentBulkRefreshParams(BaseModel):
-    ids: List[str] = Field(default_factory=list)
-
-class AgentProcessIntakeParams(BaseModel):
-    limit: int = Field(default=25, ge=1, le=500)
-
-AGENT_PROPOSALS_DIR = DATA_DIR / "agent_proposals"
-_AGENT_PROPOSALS: dict[str, dict] = {}
-
-
-def _dump_model(model: BaseModel) -> dict:
-    if hasattr(model, "model_dump"):
-        return model.model_dump()
-    return model.dict()
-
-
-def _agent_proposal_path(proposal_id: str) -> Path:
-    return resolve_json_path(AGENT_PROPOSALS_DIR, proposal_id, kind="agent proposal")
-
-
-def _save_agent_proposal(proposal: dict) -> None:
-    AGENT_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
-    path = _agent_proposal_path(proposal.get("id", ""))
-    tmp = path.with_suffix(f".{uuid.uuid4().hex}.tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(proposal, f, indent=2)
-    tmp.replace(path)
-
-
-def _consume_agent_proposal(proposal_id: str) -> Optional[dict]:
-    try:
-        path = _agent_proposal_path(proposal_id)
-    except ValueError:
-        raise
-
-    proposal = _AGENT_PROPOSALS.pop(proposal_id, None)
-    if proposal is None and path.exists():
-        with open(path, "r", encoding="utf-8") as f:
-            proposal = json.load(f)
-
-    if proposal is not None:
-        path.unlink(missing_ok=True)
-    return proposal
-
-
-def _agent_event(event_type: str, *, proposal: dict, actor: str = "system", result: Any = None, error: str = "") -> None:
-    event = {
-        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
-        "event_type": event_type,
-        "timestamp": utc_now_iso(),
-        "actor": {"type": actor},
-        "source": {
-            "source_type": "agent",
-            "proposal_id": proposal.get("id", ""),
-            "action_type": proposal.get("type", ""),
-        },
-        "changes": [{"operation": event_type, "path": "/agent/proposals", "value": proposal.get("type", "")}],
-        "agent": {
-            "proposal_id": proposal.get("id", ""),
-            "action_type": proposal.get("type", ""),
-            "params": proposal.get("params", {}),
-            "result": result,
-            "error": error,
-        },
-        "confidence": 1.0,
+@app.get("/api/stats")
+async def get_stats():
+    candidates_count = len(list(RECORDS_DIR.glob("*.json"))) if RECORDS_DIR.exists() else 0
+    jobs_count = len(list(REQUIREMENTS_DIR.glob("*.json"))) if REQUIREMENTS_DIR.exists() else 0
+    projects_count = len(list(PROJECTS_DIR.glob("*.json"))) if PROJECTS_DIR.exists() else 0
+    review_queue = get_review_queue()
+    pending_reviews = sum(1 for t in review_queue if t.get("status", "").upper() == "PENDING")
+    return {
+        "candidatesCount": candidates_count,
+        "jobsCount": jobs_count,
+        "projectsCount": projects_count,
+        "pendingReviewsCount": pending_reviews,
+        "tasksCount": len(review_queue),
     }
-    try:
-        log_event(event)
-    except OSError as exc:
-        print(f"[agent] audit log unavailable: {exc}")
-
-
-def _agent_proposal(action_type: str, label: str, description: str, params: BaseModel, impact: str) -> AgentProposal:
-    proposal = AgentProposal(
-        id=f"agent_{uuid.uuid4().hex[:12]}",
-        type=action_type,
-        label=label,
-        description=description,
-        params=_dump_model(params),
-        impact=impact,
-        createdAt=utc_now_iso(),
-    )
-    stored = _dump_model(proposal)
-    _AGENT_PROPOSALS[proposal.id] = stored
-    _save_agent_proposal(stored)
-    _agent_event("agent_action_proposed", proposal=stored)
-    return proposal
-
-
-def _job_label(job: dict) -> str:
-    return f"{job.get('title', 'Untitled job')} ({job.get('location') or 'No location'})"
-
-
-def _find_job_from_text(text: str, jobs: list) -> Optional[dict]:
-    id_m = re.search(r"\breq_[A-Za-z0-9_-]+\b", text)
-    if id_m:
-        return next((j for j in jobs if j.get("id") == id_m.group(0)), None)
-
-    lower = text.lower()
-    exact = [j for j in jobs if j.get("title", "").lower() and j.get("title", "").lower() in lower]
-    if exact:
-        return sorted(exact, key=lambda j: len(j.get("title", "")), reverse=True)[0]
-
-    tokens = {tok for tok in re.findall(r"[a-z0-9+#.]+", lower) if len(tok) > 2}
-    scored = []
-    for job in jobs:
-        haystack = " ".join([
-            job.get("title", ""),
-            job.get("department", ""),
-            job.get("location", ""),
-            " ".join(job.get("tags", [])),
-        ]).lower()
-        score = sum(1 for tok in tokens if tok in haystack)
-        if score:
-            scored.append((score, job))
-    if scored:
-        scored.sort(key=lambda row: row[0], reverse=True)
-        return scored[0][1]
-    return jobs[0] if len(jobs) == 1 else None
-
-
-def _find_candidate_from_text(text: str, candidates: list, jobs: list, job: Optional[dict] = None) -> Optional[dict]:
-    id_m = re.search(r"\bcand_[A-Za-z0-9_-]+\b", text)
-    if id_m:
-        return next((c for c in candidates if c.get("id") == id_m.group(0)), None)
-
-    lower = text.lower()
-    exact = [c for c in candidates if c.get("name", "").lower() and c.get("name", "").lower() in lower]
-    if exact:
-        return sorted(exact, key=lambda c: len(c.get("name", "")), reverse=True)[0]
-
-    if job:
-        shortlist = job.get("shortlist") or []
-        if shortlist:
-            top = shortlist[0]
-            return {"id": top.get("id"), "name": top.get("name") or top.get("id", "")}
-
-    for existing_job in jobs:
-        shortlist = existing_job.get("shortlist") or []
-        if shortlist:
-            top = shortlist[0]
-            return {"id": top.get("id"), "name": top.get("name") or top.get("id", "")}
-    return candidates[0] if len(candidates) == 1 else None
-
-
-def _find_review_task_from_text(text: str, review_tasks: list) -> Optional[dict]:
-    id_m = re.search(r"\breview_[A-Za-z0-9_-]+\b", text)
-    if id_m:
-        return next((t for t in review_tasks if t.get("id") == id_m.group(0)), None)
-
-    pending = [t for t in review_tasks if t.get("status") == "pending"]
-    lower = text.lower()
-    for task in pending:
-        if task.get("title", "").lower() and task.get("title", "").lower() in lower:
-            return task
-        details = task.get("complianceDetails") or task.get("outreachDetails") or {}
-        for value in details.values():
-            if isinstance(value, str) and value.lower() and value.lower() in lower:
-                return task
-    return pending[0] if len(pending) == 1 else None
-
-
-def _resolution_from_text(text: str) -> str:
-    lower = text.lower()
-    if any(word in lower for word in ("purge", "delete", "remove", "gdpr erase", "erase")):
-        return "purged"
-    if any(word in lower for word in ("reject", "decline", "deny")):
-        return "rejected"
-    return "approved"
-
-
-def _candidate_ids_from_text(text: str, candidates: list) -> list[str]:
-    ids = list(dict.fromkeys(re.findall(r"\bcand_[A-Za-z0-9_-]+\b", text)))
-    lower = text.lower()
-    for candidate in candidates:
-        name = candidate.get("name", "")
-        if name and name.lower() in lower:
-            ids.append(candidate.get("id", ""))
-    return [cid for cid in dict.fromkeys(ids) if cid]
-
-
-async def _execute_agent_proposal(proposal: dict) -> AgentActionResult:
-    action_type = proposal.get("type", "")
-    params = proposal.get("params", {})
-
-    async def with_heuristic_extraction(operation):
-        from core import extract
-
-        previous = extract.ENABLE_EXTERNAL_LLM
-        extract.ENABLE_EXTERNAL_LLM = False
-        try:
-            return await operation()
-        finally:
-            extract.ENABLE_EXTERNAL_LLM = previous
-
-    if action_type == "CREATE_JOB":
-        body = AgentCreateJobParams(**params)
-        data = await create_job(JobCreate(**_dump_model(body)))
-        return AgentActionResult(type="job_created", data=data)
-
-    if action_type == "RUN_SHORTLIST":
-        body = AgentShortlistParams(**params)
-        result = generate_shortlist(body.req_id, top_n=body.top_n, use_llm_rerank=False)
-        data = []
-        for item in result.get("results", []):
-            rec_id = item.get("record_id", "")
-            name = item.get("name") or rec_id
-            confidence = item.get("combined_score", item.get("llm_score", 0.0))
-            data.append({
-                "id": rec_id,
-                "name": name,
-                "confidence": confidence,
-                "explanation": "; ".join(item.get("evidence", [])),
-                "status": "active",
-                "initials": _initials(name),
-            })
-        return AgentActionResult(type="shortlist_generated", data={"req_id": body.req_id, "shortlist": data})
-
-    if action_type == "CREATE_OUTREACH_DRAFT":
-        body = AgentOutreachDraftParams(**params)
-        from core import outreach
-
-        previous = outreach.ENABLE_EXTERNAL_OUTREACH_LLM
-        outreach.ENABLE_EXTERNAL_OUTREACH_LLM = False
-        try:
-            data = await create_outreach_draft(OutreachDraftBody(
-                candidateId=body.candidate_id,
-                jobId=body.job_id,
-                candidateName=body.candidate_name,
-                jobTitle=body.job_title,
-            ))
-        finally:
-            outreach.ENABLE_EXTERNAL_OUTREACH_LLM = previous
-        return AgentActionResult(type="outreach_draft_created", data=data)
-
-    if action_type == "RESOLVE_REVIEW":
-        body = AgentResolveReviewParams(**params)
-        data = await resolve_review_task(body.case_id, ResolveBody(resolution=body.resolution, reviewer="human_operator"))
-        return AgentActionResult(type="review_resolved", data={"case_id": body.case_id, "resolution": body.resolution, **data})
-
-    if action_type == "BULK_REFRESH_CANDIDATES":
-        body = AgentBulkRefreshParams(**params)
-        data = await with_heuristic_extraction(
-            lambda: maintenance_bulk_refresh_candidates(BulkRefreshBody(ids=body.ids))
-        )
-        return AgentActionResult(type="candidates_refreshed", data=data)
-
-    if action_type == "PROCESS_INTAKE":
-        body = AgentProcessIntakeParams(**params)
-        data = await with_heuristic_extraction(lambda: process_intake(body.limit))
-        return AgentActionResult(type="intake_processed", data=data)
-
-    raise ValueError(f"Unsupported agent action: {action_type}")
-
-
-def _agent_help_text(candidates: list, jobs: list, pending_count: int) -> str:
-    return (
-        "I can prepare Linnify talent-pool workflow actions for human confirmation:\n\n"
-        "- Create a job requirement\n"
-        "- Run a shortlist for an existing job\n"
-        "- Prepare an outreach draft for review\n"
-        "- Resolve review items\n"
-        "- Find stale profiles or refresh selected candidates\n"
-        "- Process provided intake files\n\n"
-        f"Current system: **{len(candidates)} candidates**, **{len(jobs)} jobs**, **{pending_count} pending reviews**."
-    )
-
-
-def _extract_job_params(text: str) -> dict:
-    params: dict = {"title": "", "department": "Engineering", "location": "Remote", "must_have": [], "nice_to_have": []}
-    direct_role_m = re.search(
-        r"(?:create|add|open|new|post)\s+(?:a|an)?\s*(.+?)(?:\s+(?:role|position|job)\b|\s+in\b|\s+with\b|,|\.|$)",
-        text,
-        re.IGNORECASE,
-    )
-    if direct_role_m:
-        params["title"] = direct_role_m.group(1).strip().title()
-
-    title_m = re.search(
-        r"(?:for (?:a|an) )([\w\s]+?)(?:\s+(?:role|position|job|engineer|developer|manager|analyst|designer|at|in|with|,|$))",
-        text, re.IGNORECASE
-    )
-    if title_m and not params["title"]:
-        params["title"] = title_m.group(1).strip().title()
-    elif not params["title"]:
-        role_m = re.search(
-            r"([\w\s]+?)\s+(?:role|position|engineer|developer|manager|analyst|designer)\b",
-            text, re.IGNORECASE
-        )
-        if role_m:
-            params["title"] = role_m.group(0).strip().title()
-    params["title"] = re.sub(
-        r"^(create|add|open|new|post)\s+(a|an)?\s*",
-        "",
-        params["title"],
-        flags=re.IGNORECASE,
-    ).strip()
-    params["title"] = re.sub(r"\s+(role|position|job)$", "", params["title"], flags=re.IGNORECASE).strip()
-
-    loc_m = re.search(r"(?:in|at|based in|located in)\s+([\w\s,]+?)(?:\s+with|\s+who|\s+and|,|\.|$)", text, re.IGNORECASE)
-    if loc_m:
-        params["location"] = loc_m.group(1).strip()
-
-    known_skills = [
-        "Python", "JavaScript", "TypeScript", "Java", "React", "Node.js", "AWS", "Go", "Rust",
-        "SQL", "Kubernetes", "Docker", "FastAPI", "Django", "Vue", "Angular", "PostgreSQL",
-        "MongoDB", "Machine Learning", "LLMs", "NLP", "GCP", "Azure", "C++", "C#",
-        "GDScript", "Godot", "Kotlin", "Swift", "Unity", "Unreal", "Flutter", "Dart",
-        "Redis", "Elasticsearch", "GraphQL", "Terraform", "Ansible", "Spark", "Kafka",
-    ]
-    found = [s for s in known_skills if re.search(r"\b" + re.escape(s) + r"\b", text, re.IGNORECASE)]
-    if not found:
-        print(f"[chat] Regex skill extraction found no matches for: {text[:80]!r}")
-    params["must_have"] = list(dict.fromkeys(found))
-    return params
-
-
-def _format_jobs_list(jobs: list, query: str = "") -> str:
-    if not jobs:
-        return "No job requirements are currently active in the system."
-    q = query.lower()
-    filtered = [
-        j for j in jobs
-        if not q or q in j.get("title", "").lower()
-        or q in j.get("department", "").lower()
-        or q in j.get("location", "").lower()
-        or any(q in tag.lower() for tag in j.get("tags", []))
-    ] or jobs
-    lines = [f"Found **{len(filtered)} job(s)**:\n"]
-    for j in filtered[:10]:
-        lines.append(f"- **{j.get('title')}** - {j.get('department', '')} / {j.get('location', '')} `{j.get('status', 'MATCHING')}`")
-    return "\n".join(lines)
-
-
-@app.post("/api/gemini/chat")
-async def gemini_chat(body: _GeminiChatBody) -> dict:
-    messages = [{"role": m.role, "content": m.content} for m in body.messages]
-    context = body.context
-    last_user_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-    lower_msg = last_user_msg.lower()
-
-    candidates: list = context.get("candidates", [])
-    jobs: list = context.get("jobs", [])
-    review_tasks: list = context.get("reviewTasks", [])
-    pending_count = sum(1 for t in review_tasks if t.get("status") == "pending")
-    actions_taken: list[AgentActionResult] = []
-    proposals: list[AgentProposal] = []
-    errors: list[str] = []
-    candidate_profiles: list[dict] = []
-    for record_id in _candidate_record_ids():
-        rec = load_record(record_id)
-        if rec and not rec.state.archived:
-            candidate_profiles.append({
-                "id": record_id,
-                "name": rec.identity.primary_name or "Unknown",
-                "seniority": rec.profile.seniority or "Unknown",
-                "location": rec.profile.location or "",
-                "skills": rec.profile.technologies_used or [],
-                "summary": rec.profile.summary or rec.profile.headline or "",
-            })
-
-    create_intent = any(p in lower_msg for p in [
-        "create job", "add job", "new job", "post job",
-        "create a job", "add a job", "create a new job", "create a role", "add a role",
-        "open a role", "new role",
-    ]) or (
-        re.search(r"\b(create|add|open|post|new)\b", lower_msg)
-        and re.search(r"\b(role|position|job|engineer|developer|manager|analyst|designer)\b", lower_msg)
-    )
-    search_intent = any(p in lower_msg for p in [
-        "find job", "search job", "list job", "show job",
-        "what jobs", "which jobs", "show me job", "find a job",
-    ])
-    shortlist_intent = "shortlist" in lower_msg or "rank candidate" in lower_msg or "match candidates" in lower_msg
-    outreach_intent = "outreach" in lower_msg or "email draft" in lower_msg or "draft email" in lower_msg
-    resolve_intent = any(p in lower_msg for p in ["resolve review", "approve review", "reject review", "purge review", "approve case", "reject case", "purge case"])
-    refresh_intent = "refresh" in lower_msg or "bulk update" in lower_msg or "bulk refresh" in lower_msg
-    intake_intent = "process intake" in lower_msg or "ingest intake" in lower_msg or "import intake" in lower_msg
-    stale_intent = "stale" in lower_msg or "outdated" in lower_msg or "not updated" in lower_msg
-
-    response_text = ""
-
-    if create_intent:
-        params = _extract_job_params(last_user_msg)
-        if params["title"]:
-            job_body = AgentCreateJobParams(
-                title=params["title"],
-                department=params["department"],
-                location=params["location"],
-                must_have=params["must_have"],
-                nice_to_have=params["nice_to_have"],
-            )
-            skills_str = ", ".join(params["must_have"]) if params["must_have"] else "to be defined"
-            proposals.append(_agent_proposal(
-                "CREATE_JOB",
-                f"Create job: {params['title']}",
-                f"Create a {params['department']} job requirement in {params['location']} with required skills: {skills_str}.",
-                job_body,
-                "Adds one job requirement. No candidates are shortlisted until you run matching.",
-            ))
-            response_text = "I prepared a job requirement proposal. Confirm it to add the job to Jobs & Shortlist."
-        else:
-            response_text = (
-                "Please include the role title before I prepare the job proposal, for example:\n\n"
-                "_Create a Senior Python Developer role in London with FastAPI and Docker._"
-            )
-    elif shortlist_intent:
-        job = _find_job_from_text(last_user_msg, jobs)
-        if job:
-            body = AgentShortlistParams(req_id=job.get("id", ""), top_n=5)
-            proposals.append(_agent_proposal(
-                "RUN_SHORTLIST",
-                f"Run shortlist: {job.get('title', 'job')}",
-                f"Rank active talent-pool candidates for {_job_label(job)}.",
-                body,
-                "Updates the selected job with a ranked shortlist and evidence rows.",
-            ))
-            response_text = "I prepared a shortlist run. Confirm it to score and rank candidates for this job."
-        else:
-            response_text = "I need a specific job before preparing a shortlist run. Try naming the job title or use its `req_...` id."
-    elif outreach_intent:
-        job = _find_job_from_text(last_user_msg, jobs)
-        candidate = _find_candidate_from_text(last_user_msg, candidates, jobs, job)
-        if job and candidate:
-            body = AgentOutreachDraftParams(
-                candidate_id=candidate.get("id", ""),
-                job_id=job.get("id", ""),
-                candidate_name=candidate.get("name", ""),
-                job_title=job.get("title", ""),
-            )
-            proposals.append(_agent_proposal(
-                "CREATE_OUTREACH_DRAFT",
-                f"Draft outreach: {candidate.get('name', 'candidate')}",
-                f"Prepare a human-reviewed outreach draft for {candidate.get('name', 'the selected candidate')} about {job.get('title', 'the selected job')}.",
-                body,
-                "Creates an outreach draft in Outreach & Review. It does not send email or contact the candidate.",
-            ))
-            response_text = "I prepared an outreach-draft proposal. Confirm it to add the draft to the review queue."
-        else:
-            response_text = "I need both a candidate and a job before drafting outreach. Name the candidate/job or use their ids."
-    elif resolve_intent:
-        task = _find_review_task_from_text(last_user_msg, review_tasks)
-        if task:
-            resolution = _resolution_from_text(last_user_msg)
-            body = AgentResolveReviewParams(case_id=task.get("id", ""), resolution=resolution)
-            proposals.append(_agent_proposal(
-                "RESOLVE_REVIEW",
-                f"Resolve review: {task.get('id', '')[:12]}",
-                f"Mark review case `{task.get('id', '')}` as {resolution}.",
-                body,
-                "Changes the review queue. Purge resolutions may archive the candidate record.",
-            ))
-            response_text = "I prepared a review-resolution proposal. Confirm it only after checking the review item."
-        else:
-            response_text = "I need the review case id or a unique pending review item before preparing a resolution."
-    elif intake_intent:
-        limit_m = re.search(r"\b(\d{1,3})\b", last_user_msg)
-        limit = int(limit_m.group(1)) if limit_m else 25
-        body = AgentProcessIntakeParams(limit=limit)
-        proposals.append(_agent_proposal(
-            "PROCESS_INTAKE",
-            f"Process intake files ({body.limit})",
-            f"Import up to {body.limit} provided `.pdf` or `.txt` files from the intake folder.",
-            body,
-            "Creates or updates candidate records from files already placed in the local intake folder.",
-        ))
-        response_text = "I prepared an intake-processing proposal. Confirm it to import local intake files."
-    elif refresh_intent:
-        ids = _candidate_ids_from_text(last_user_msg, candidates)
-        if stale_intent and not ids:
-            months_m = re.search(r"(\d{1,2})\s*month", lower_msg)
-            months = int(months_m.group(1)) if months_m else 6
-            stale_result = await list_stale_candidates(months)
-            ids = [c.get("id", "") for c in stale_result.get("candidates", []) if c.get("id")]
-        if ids:
-            body = AgentBulkRefreshParams(ids=ids)
-            proposals.append(_agent_proposal(
-                "BULK_REFRESH_CANDIDATES",
-                f"Refresh {len(ids)} candidate profile{'s' if len(ids) != 1 else ''}",
-                "Update selected candidate records from already stored/profile-provided data.",
-                body,
-                "Updates candidate records locally and may add review cases for low-confidence changes. No external LinkedIn scraping is performed.",
-            ))
-            response_text = "I prepared a candidate-refresh proposal. Confirm it to update the selected records locally."
-        else:
-            response_text = "I need candidate ids, candidate names, or a stale-profile request before preparing a refresh."
-    elif stale_intent:
-        months_m = re.search(r"(\d{1,2})\s*month", lower_msg)
-        months = int(months_m.group(1)) if months_m else 6
-        result = await list_stale_candidates(months)
-        stale = result.get("candidates", [])
-        actions_taken.append(AgentActionResult(type="stale_candidates_listed", data=result))
-        if stale:
-            lines = [f"Found **{len(stale)} stale candidate(s)** older than {result.get('months', months)} months:\n"]
-            for candidate in stale[:8]:
-                lines.append(f"- **{candidate.get('name')}** `{candidate.get('id')}`")
-            response_text = "\n".join(lines)
-        else:
-            response_text = f"No stale candidates found for the {result.get('months', months)} month threshold."
-    elif search_intent:
-        response_text = _format_jobs_list(jobs, last_user_msg)
-    elif any(p in lower_msg for p in ["which candidates", "who knows", "know ", "skills", "experience with", "worked with"]):
-        stopwords = {
-            "which", "candidates", "candidate", "who", "knows", "know", "skills", "skill",
-            "experience", "with", "worked", "show", "have", "has", "the", "and", "for",
-        }
-        terms = [tok for tok in re.findall(r"[a-z0-9+#.]+", lower_msg) if len(tok) > 2 and tok not in stopwords]
-        matches = []
-        for profile in candidate_profiles:
-            haystack = " ".join([
-                profile.get("seniority", ""),
-                profile.get("location", ""),
-                " ".join(profile.get("skills", [])),
-                profile.get("summary", ""),
-            ]).lower()
-            score = sum(1 for term in terms if term in haystack)
-            if score:
-                matches.append((score, profile))
-        matches.sort(key=lambda row: row[0], reverse=True)
-        if matches:
-            lines = [f"Found **{len(matches)} candidate(s)** matching {', '.join(terms) or 'your query'}:\n"]
-            for _, profile in matches[:8]:
-                skills = ", ".join(profile.get("skills", [])[:5]) or "No skills listed"
-                lines.append(f"- **{profile.get('name')}** `{profile.get('id')}` - {profile.get('seniority')} / {skills}")
-            response_text = "\n".join(lines)
-        else:
-            response_text = "I did not find a local candidate match for that skill query."
-    elif any(p in lower_msg for p in ["candidate", "talent", "pool", "how many"]):
-        response_text = (
-            f"**Talent Pool Overview**\n\n"
-            f"- Total candidates: **{len(candidates)}**\n"
-            f"- Active jobs: **{len(jobs)}**\n"
-            f"- Pending compliance reviews: **{pending_count}**\n\n"
-            "Use the Talent Pool screen for detailed filtering."
-        )
-    elif any(p in lower_msg for p in ["compliance", "gdpr", "pending", "review"]):
-        pending_tasks = [t for t in review_tasks if t.get("status") == "pending"]
-        if pending_tasks:
-            lines = [f"**{len(pending_tasks)} pending review task(s):**\n"]
-            for t in pending_tasks[:5]:
-                lines.append(f"- `{t.get('id','')}` - {t.get('type','UNKNOWN').replace('_',' ')}")
-            response_text = "\n".join(lines)
-        else:
-            response_text = "No pending review tasks. The candidate pool is clear right now."
-    else:
-        response_text = _agent_help_text(candidates, jobs, pending_count)
-
-    response = AgentChatResponse(text=response_text, actions=actions_taken, proposals=proposals, errors=errors)
-    return _dump_model(response)
-
-
-@app.post("/api/agent/actions/{proposal_id}/confirm")
-async def confirm_agent_action(proposal_id: str):
-    try:
-        proposal = _consume_agent_proposal(proposal_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    if not proposal:
-        raise HTTPException(status_code=404, detail=f"Agent proposal '{proposal_id}' not found or already handled")
-
-    try:
-        result = await _execute_agent_proposal(proposal)
-    except HTTPException as exc:
-        _agent_event("agent_action_failed", proposal=proposal, actor="human", error=str(exc.detail))
-        raise
-    except Exception as exc:
-        _agent_event("agent_action_failed", proposal=proposal, actor="human", error=str(exc))
-        raise HTTPException(status_code=422, detail=str(exc))
-
-    data = _dump_model(result) if isinstance(result, BaseModel) else result
-    _agent_event("agent_action_confirmed", proposal=proposal, actor="human", result=data)
-    response = AgentChatResponse(
-        text=f"Confirmed: {proposal.get('label', proposal.get('type', 'agent action'))}.",
-        actions=[result],
-        proposals=[],
-        errors=[],
-    )
-    return _dump_model(response)
 
 
 # ---------------------------------------------------------------------------
-# Spreadsheet ingest routes
+# SPA catch-all (must be last)
 # ---------------------------------------------------------------------------
 
-from web.app_csv_patch import apply_csv_routes
-apply_csv_routes(app)
-
-
-# ---------------------------------------------------------------------------
-# Serve built React SPA (production)
-# ---------------------------------------------------------------------------
-
-UI_DIST = project_root / "ui" / "dist"
-
-if UI_DIST.exists():
-    assets_dir = UI_DIST / "assets"
-    if assets_dir.exists():
-        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
-
-    @app.get("/{full_path:path}", response_class=FileResponse, include_in_schema=False)
-    async def spa_fallback(full_path: str):
-        index = UI_DIST / "index.html"
-        if not index.exists():
-            raise HTTPException(status_code=404, detail="UI not built yet - run: cd ui && npm run build")
-        return FileResponse(str(index))
-
-
-def start_server():
-    import uvicorn
-    uvicorn.run("web.app:app", host="127.0.0.1", port=8080, reload=True)
-
-
-if __name__ == "__main__":
-    start_server()
+_STATIC_DIR = Path(__file__).resolve().parent / "dist"
+if _STATIC_DIR.exists():
+    app.mount("/", StaticFiles(directory=str(_STATIC_DIR), html=True), name="static")
+else:
+    @app.get("/")
+    async def root():
+        return {"message": "API running. Build the frontend with: cd web && npm run build"}

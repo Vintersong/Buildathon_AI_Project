@@ -191,6 +191,32 @@ def extract_candidate_data(text: str) -> tuple["CandidateExtraction", Dict[str, 
         return extract_candidate_data_heuristic(text)
 
 
+def _extract_years_of_experience(text_lower: str) -> int | None:
+    """Best-effort total years of experience from free CV text.
+
+    Priority:
+      1. Numbers explicitly tied to the word "experience"
+         ("8 years of experience", "5 years total experience") — total
+         experience is always >= any single tenure, so take the max.
+      2. Otherwise any "<n> years" not immediately followed by "ago"
+         (drops "graduated 4 years ago"); take the max as the safest guess.
+    """
+    import re as _re
+
+    strong = _re.findall(
+        r"(\d{1,2})\+?\s*years?\s+(?:of\s+)?(?:[a-z]+\s+){0,2}experience",
+        text_lower,
+    )
+    if strong:
+        return max(int(n) for n in strong)
+
+    weak = [
+        int(m.group(1))
+        for m in _re.finditer(r"(\d{1,2})\+?\s*years?(?!\s+ago)", text_lower)
+    ]
+    return max(weak) if weak else None
+
+
 def extract_candidate_data_heuristic(text: str) -> tuple["CandidateExtraction", Dict[str, Any]]:
     """
     Heuristic fallback extractor — no LLM required.
@@ -231,11 +257,10 @@ def extract_candidate_data_heuristic(text: str) -> tuple["CandidateExtraction", 
     text_lower = text.lower()
     technologies = [t for t in tech_keywords if t in text_lower]
 
-    # Years of experience — first "<n> years" mention.
-    yoe = None
-    yoe_m = _re.search(r"(\d{1,2})\+?\s*years?", text_lower)
-    if yoe_m:
-        yoe = int(yoe_m.group(1))
+    # Years of experience — total, not the first "<n> years" we happen to see.
+    # A plain "first match" grabs single-job tenures ("Meta for 2 years") or
+    # unrelated phrases ("graduated 4 years ago") instead of total experience.
+    yoe = _extract_years_of_experience(text_lower)
 
     # Seniority — first level keyword present.
     seniority = None

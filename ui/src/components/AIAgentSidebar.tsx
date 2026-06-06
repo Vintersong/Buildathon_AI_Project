@@ -37,6 +37,11 @@ const QUICK_ACTIONS: Record<Screen, string[]> = {
     'Draft outreach for the top match',
     'Show me active jobs',
   ],
+  projects: [
+    'Match candidates to the newest project',
+    'Summarize open project prospects',
+    'Which candidates fit this project?',
+  ],
   review: [
     'Explain why these cases were flagged',
     'Summarize pending compliance flags',
@@ -54,6 +59,7 @@ const SCREEN_LABELS: Record<Screen, string> = {
   overview: 'Overview',
   talent: 'Talent Pool',
   jobs: 'Jobs & Shortlist',
+  projects: 'Projects',
   review: 'Outreach & Review',
   maintenance: 'Maintenance',
   settings: 'Settings',

@@ -24,6 +24,7 @@ from core.config import (
     DATA_DIR,
     RECORDS_DIR,
     REQUIREMENTS_DIR,
+    PROJECTS_DIR,
     RECORD_INDEX_PATH,
     INTAKE_DIR,
     PROVIDERS,
@@ -983,6 +984,198 @@ async def run_shortlist(req_id: str):
 
 
 # ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+class ProjectCreateBody(BaseModel):
+    """Matches the frontend ``CreateProjectPayload`` (camelCase, bare fields)."""
+    title: str
+    client: Optional[str] = None
+    domain: Optional[str] = None
+    brief: str = ""
+    requiredSkills: List[str] = Field(default_factory=list)
+    niceToHaveSkills: List[str] = Field(default_factory=list)
+
+
+def _project_event(event_type: str, **fields) -> None:
+    """Append a projects audit event using the single-dict log_event signature."""
+    try:
+        log_event({"event_type": event_type, "timestamp": utc_now_iso(), **fields})
+    except OSError as exc:
+        print(f"[projects] audit log unavailable: {exc}")
+
+
+def _load_project(project_id: str) -> dict:
+    path = PROJECTS_DIR / f"{project_id}.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _save_project(data: dict) -> None:
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = PROJECTS_DIR / f"{data['id']}.json"
+    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def _map_project(data: dict) -> dict:
+    """Map stored project JSON to the frontend ``ProjectProspect`` shape."""
+    crit = data.get("requirements") or {}
+    yoe = crit.get("years_of_experience")
+    location = crit.get("location")
+    return {
+        "id": data.get("id"),
+        "title": data.get("title") or "Untitled",
+        "client": data.get("client") or None,
+        "domain": data.get("domain") or None,
+        "status": data.get("status") or "DRAFT",
+        "tags": data.get("tags") or ([data["domain"]] if data.get("domain") else []),
+        "brief": data.get("brief") or "",
+        "requiredSkills": crit.get("must_have") or [],
+        "niceToHaveSkills": crit.get("nice_to_have") or [],
+        "minSeniority": crit.get("seniority") or None,
+        "locations": [location] if location else [],
+        "languages": crit.get("language") or [],
+        "constraintsSummary": (f"{yoe}+ years experience" if yoe else None),
+        "createdAt": data.get("created_at") or "",
+        "updatedAt": data.get("updated_at") or data.get("created_at") or "",
+    }
+
+
+def _map_project_match(result: dict, *, shortlisted: bool) -> dict:
+    """Map a generate_shortlist result row to the ``ProjectMatchCandidate`` shape."""
+    name = result.get("name") or "Unknown"
+    evidence = result.get("evidence") or []
+    explanation = "; ".join(evidence) if evidence else " · ".join(
+        part for part in [
+            result.get("seniority") or "",
+            ", ".join((result.get("skills_preview") or [])[:5]),
+        ] if part
+    )
+    confidence = result.get("llm_score")
+    if confidence is None:
+        confidence = result.get("combined_score") or result.get("embedding_score") or 0.0
+    return {
+        "id": result.get("record_id"),
+        "name": name,
+        "confidence": round(float(confidence), 4),
+        "explanation": explanation,
+        "status": "shortlisted" if shortlisted else "drafted",
+        "initials": _initials(name),
+    }
+
+
+@app.get("/api/projects")
+async def list_projects(search: Optional[str] = None):
+    """Return all projects (bare array), optionally filtered by title/brief."""
+    if not PROJECTS_DIR.exists():
+        return []
+    projects = []
+    for path in sorted(PROJECTS_DIR.glob("*.json")):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        mapped = _map_project(data)
+        if search:
+            q = search.lower()
+            if q not in mapped["title"].lower() and q not in (mapped["brief"] or "").lower():
+                continue
+        projects.append(mapped)
+    return projects
+
+
+@app.post("/api/projects", status_code=201)
+async def create_project(body: ProjectCreateBody):
+    """Create a new project and persist it to data/projects/."""
+    project_id = f"proj-{uuid.uuid4().hex[:8]}"
+    now = utc_now_iso()
+    data = {
+        "id": project_id,
+        "title": body.title,
+        "client": body.client,
+        "domain": body.domain,
+        "brief": body.brief or "",
+        "status": "DRAFT",
+        "tags": [],
+        "created_at": now,
+        "updated_at": now,
+        "requirements": {
+            "must_have": body.requiredSkills,
+            "nice_to_have": body.niceToHaveSkills,
+            "seniority": None,
+            "location": None,
+            "years_of_experience": None,
+            "language": [],
+        },
+        "matches": [],
+    }
+    _save_project(data)
+    _project_event("project_created", project_id=project_id, title=body.title)
+    return _map_project(data)
+
+
+@app.get("/api/projects/{project_id}")
+async def get_project(project_id: str):
+    """Return a single project by ID."""
+    return _map_project(_load_project(project_id))
+
+
+@app.post("/api/projects/{project_id}/match")
+async def run_project_match(project_id: str, top_n: int = 5):
+    """Run the full matching pipeline against the project's requirements.
+
+    The project's requirements are written as a temporary RequirementRecord
+    into REQUIREMENTS_DIR so the existing ``generate_shortlist`` pipeline
+    can process them without modification.  The temp file is cleaned up
+    after the run regardless of outcome. Returns a bare ``ProjectMatchCandidate[]``.
+    """
+    data = _load_project(project_id)  # 404 guard
+
+    # Write a temporary requirement file reusing the project's criteria.
+    tmp_req_id = f"_proj_tmp_{project_id}"
+    tmp_path = REQUIREMENTS_DIR / f"{tmp_req_id}.json"
+    REQUIREMENTS_DIR.mkdir(parents=True, exist_ok=True)
+    now = utc_now_iso()
+    req_data = {
+        "id": tmp_req_id,
+        "title": data.get("title", ""),
+        "description": data.get("brief", ""),
+        "requirements": data.get("requirements") or {},
+        "created_at": now,
+        "updated_at": now,
+    }
+    tmp_path.write_text(json.dumps(req_data, indent=2), encoding="utf-8")
+
+    try:
+        result = generate_shortlist(tmp_req_id, top_n=top_n)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.exception("Project matching failed for %s", project_id)
+        raise HTTPException(status_code=500, detail="Matching failed")
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    rows = [_map_project_match(r, shortlisted=True) for r in result.get("results", [])]
+
+    # Persist matches + status back into the project file.
+    data["matches"] = rows
+    data["status"] = "SHORTLISTED" if rows else data.get("status", "DRAFT")
+    data["match_generated_at"] = utc_now_iso()
+    data["updated_at"] = utc_now_iso()
+    _save_project(data)
+
+    _project_event(
+        "project_match_run",
+        project_id=project_id,
+        total_evaluated=result.get("total_candidates_evaluated", 0),
+        matches=len(rows),
+    )
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # Review queue endpoints
 # ---------------------------------------------------------------------------
 
@@ -1453,6 +1646,41 @@ def _agent_help_text(candidates: list, jobs: list, pending_count: int) -> str:
     )
 
 
+def _conversational_reply(
+    messages: list, candidates: list, jobs: list, pending_count: int
+) -> Optional[str]:
+    """Generate a free-form assistant reply via the active LLM provider.
+
+    Returns None when no provider is configured/reachable (so the caller falls
+    back to the deterministic help text). Never raises — any provider error
+    degrades gracefully to the rule-based response.
+    """
+    try:
+        from core import llm
+        if not llm.llm_available():
+            return None
+        system = (
+            "You are the Linnify Talent Pool assistant, embedded in a recruiting "
+            "dashboard. Be concise and helpful. You can guide the recruiter to: "
+            "create job requirements, run shortlists, draft outreach, resolve review "
+            "items, find/refresh stale profiles, and process intake files. You do NOT "
+            "execute actions yourself — those run as human-confirmed proposals. "
+            "Do not invent candidates, jobs, or numbers.\n\n"
+            f"Current system state: {len(candidates)} candidates, {len(jobs)} jobs, "
+            f"{pending_count} pending reviews."
+        )
+        llm_messages = [{"role": "system", "content": system}] + [
+            {"role": m["role"], "content": m["content"]}
+            for m in messages
+            if m.get("role") in ("user", "assistant") and m.get("content")
+        ]
+        reply = llm.complete(llm_messages, temperature=0.3)
+        return reply.strip() or None
+    except Exception as exc:
+        logger.warning("Conversational LLM fallback unavailable: %s", exc)
+        return None
+
+
 def _extract_job_params(text: str) -> dict:
     params: dict = {"title": "", "department": "Engineering", "location": "Remote", "must_have": [], "nice_to_have": []}
     direct_role_m = re.search(
@@ -1730,7 +1958,10 @@ async def gemini_chat(body: _GeminiChatBody) -> dict:
         else:
             response_text = "No pending review tasks. The candidate pool is clear right now."
     else:
-        response_text = _agent_help_text(candidates, jobs, pending_count)
+        response_text = (
+            _conversational_reply(messages, candidates, jobs, pending_count)
+            or _agent_help_text(candidates, jobs, pending_count)
+        )
 
     response = AgentChatResponse(text=response_text, actions=actions_taken, proposals=proposals, errors=errors)
     return _dump_model(response)

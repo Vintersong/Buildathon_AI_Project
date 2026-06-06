@@ -28,6 +28,11 @@ const titles: Record<Screen, { title: string; subtitle: string; searchable: bool
     subtitle: 'Create job requirements, rank candidates, and send outreach drafts into review.',
     searchable: true,
   },
+  projects: {
+    title: 'Projects',
+    subtitle: 'Create project prospects and match them against your talent pool.',
+    searchable: false,
+  },
   review: {
     title: 'Outreach & Review',
     subtitle: 'Approve or reject compliance flags, identity conflicts, and outreach drafts.',

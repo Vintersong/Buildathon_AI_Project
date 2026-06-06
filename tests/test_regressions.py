@@ -334,6 +334,28 @@ class RegressionTests(unittest.TestCase):
         self.assertIn("English", extraction.languages_spoken)
         self.assertEqual(extraction.years_of_experience, 7)
 
+    def test_heuristic_experience_prefers_total_over_job_tenure(self):
+        """Regression: the heuristic must report total experience, not the first
+        '<n> years' it sees (which is usually a single job tenure or an unrelated
+        phrase like 'graduated 4 years ago')."""
+        from core.extract import extract_candidate_data_heuristic
+
+        cases = [
+            # (cv_text, expected_years)
+            ("Jane Smith\nSenior Engineer\nMeta for 2 years before that.\n"
+             "Total 8 years of experience.", 8),
+            ("John Doe\nWorked 2 years at a startup, then 3 years at BigCo.\n"
+             "5 years total experience.", 5),
+            ("Bob\nGraduated 4 years ago.\n"
+             "Senior Developer with 10 years of experience.", 10),
+        ]
+        for text, expected in cases:
+            extraction, _ = extract_candidate_data_heuristic(text)
+            self.assertEqual(
+                extraction.years_of_experience, expected,
+                msg=f"expected {expected} yrs total for: {text!r}",
+            )
+
     def test_cv_preview_endpoint_returns_ui_shape(self):
         import web.app as web_app
 

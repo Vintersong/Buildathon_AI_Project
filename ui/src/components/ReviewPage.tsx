@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CheckCircle, Clock, Copy, ShieldAlert, Trash2, XCircle } from 'lucide-react';
+import { AlertOctagon, CheckCircle, Clock, Copy, ShieldAlert, Trash2, X, XCircle } from 'lucide-react';
 import { AuditEvent, ReviewTask } from '../types';
 
 interface ReviewPageProps {
@@ -38,9 +38,91 @@ function taskDetail(task: ReviewTask) {
   return task.recommendation || 'Potential duplicate or identity conflict requires a human decision.';
 }
 
+function ConfirmPurgeModal({
+  task,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  task: ReviewTask;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const [confirmText, setConfirmText] = useState('');
+  const canPurge = confirmText.trim().toUpperCase() === 'PURGE' && !busy;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+      <form
+        onSubmit={(event) => { event.preventDefault(); if (canPurge) onConfirm(); }}
+        className="w-full max-w-md overflow-hidden rounded-md bg-white shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-md bg-rose-50 p-2 text-rose-600">
+              <AlertOctagon className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-slate-950">Purge record</h2>
+              <p className="text-sm text-slate-500">This action is irreversible.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="Cancel purge"
+            onClick={onCancel}
+            disabled={busy}
+            className="rounded-md p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-900 disabled:opacity-50"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        <div className="space-y-4 p-5">
+          <p className="text-sm leading-6 text-slate-600">
+            You are about to purge <span className="font-semibold text-slate-900">{taskSummary(task)}</span> and
+            permanently remove the associated data. This cannot be undone.
+          </p>
+          <label className="block">
+            <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Type <span className="font-mono text-rose-600">PURGE</span> to confirm
+            </span>
+            <input
+              value={confirmText}
+              onChange={(event) => setConfirmText(event.target.value)}
+              autoFocus
+              placeholder="PURGE"
+              className="mt-1 h-10 w-full rounded-md border border-slate-200 px-3 font-mono text-sm outline-none focus:border-rose-500 focus:ring-2 focus:ring-rose-100"
+            />
+          </label>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-4">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={busy}
+            className="h-10 rounded-md border border-slate-200 px-4 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={!canPurge}
+            className="inline-flex h-10 items-center gap-2 rounded-md bg-rose-600 px-4 text-sm font-medium text-white hover:bg-rose-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Trash2 className="h-4 w-4" />
+            Purge permanently
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export default function ReviewPage({ tasks, auditEvents, onResolve }: ReviewPageProps) {
   const [filter, setFilter] = useState<Filter>('pending');
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [purgeTask, setPurgeTask] = useState<ReviewTask | null>(null);
 
   const filtered = useMemo(() => {
     if (filter === 'all') return tasks;
@@ -118,7 +200,7 @@ export default function ReviewPage({ tasks, auditEvents, onResolve }: ReviewPage
                   <button
                     type="button"
                     disabled={busyId === task.id}
-                    onClick={() => resolve(task, 'purged')}
+                    onClick={() => setPurgeTask(task)}
                     className="inline-flex h-10 items-center gap-2 rounded-md border border-rose-200 px-3 text-sm font-medium text-rose-700 hover:bg-rose-50 disabled:opacity-60"
                   >
                     <Trash2 className="h-4 w-4" />
@@ -216,6 +298,19 @@ export default function ReviewPage({ tasks, auditEvents, onResolve }: ReviewPage
           </div>
         </section>
       </aside>
+
+      {purgeTask && (
+        <ConfirmPurgeModal
+          task={purgeTask}
+          busy={busyId === purgeTask.id}
+          onCancel={() => setPurgeTask(null)}
+          onConfirm={async () => {
+            const target = purgeTask;
+            await resolve(target, 'purged');
+            setPurgeTask(null);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -13,13 +13,16 @@ import {
 import * as api from '../api';
 import { Candidate, CandidateDetail } from '../types';
 import CSVImportButton from './CSVImportButton';
+import AiExtractionPanel from './AiExtractionPanel';
 
 interface TalentPoolPageProps {
   candidates: Candidate[];
   searchQuery: string;
+  initialCandidateId?: string | null;
   onOpenIngest: () => void;
   onRefresh: () => Promise<void>;
   onToast: (message: string, type?: 'success' | 'info' | 'error') => void;
+  onConsumeInitial?: () => void;
 }
 
 const statusStyles: Record<Candidate['complianceStatus'], string> = {
@@ -121,7 +124,9 @@ function DetailDrawer({
           </div>
         ) : (
           <div className="space-y-6 p-5">
-            <section className="grid gap-4 sm:grid-cols-3">
+            <AiExtractionPanel detail={detail} />
+
+            <section className="grid gap-4 sm:grid-cols-2">
               <div className="rounded-md border border-slate-200 p-4">
                 <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Seniority</p>
                 <p className="mt-2 text-sm font-semibold text-slate-900">{detail.seniority || 'Unknown'}</p>
@@ -131,10 +136,6 @@ function DetailDrawer({
                 <p className="mt-2 text-sm font-semibold text-slate-900">
                   {detail.yearsOfExperience ?? 'Unknown'}{detail.yearsOfExperience === null ? '' : ' years'}
                 </p>
-              </div>
-              <div className="rounded-md border border-slate-200 p-4">
-                <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Confidence</p>
-                <p className="mt-2 text-sm font-semibold text-slate-900">{Math.round((detail.extractionConfidence ?? 0) * 100)}%</p>
               </div>
             </section>
 
@@ -241,14 +242,25 @@ function DetailDrawer({
 export default function TalentPoolPage({
   candidates,
   searchQuery,
+  initialCandidateId,
   onOpenIngest,
   onRefresh,
   onToast,
+  onConsumeInitial,
 }: TalentPoolPageProps) {
   const [statusFilter, setStatusFilter] = useState<'all' | Candidate['complianceStatus']>('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [activeCandidate, setActiveCandidate] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Post-ingest momentum: when the parent hands us a freshly ingested candidate,
+  // open its detail drawer immediately, then clear the parent's focus state so it
+  // does not reopen on later renders.
+  useEffect(() => {
+    if (!initialCandidateId) return;
+    setActiveCandidate(initialCandidateId);
+    onConsumeInitial?.();
+  }, [initialCandidateId, onConsumeInitial]);
 
   const filtered = useMemo(() => {
     return candidates

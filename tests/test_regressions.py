@@ -246,6 +246,26 @@ class RegressionTests(unittest.TestCase):
             asyncio.run(web_app.delete_job("..\\config"))
         self.assertEqual(getattr(ctx.exception, "status_code", None), 400)
 
+    def test_get_project_rejects_traversal_id(self):
+        import web.app as web_app
+
+        for bad_id in ("..\\config", "../secret", "a/b"):
+            with self.assertRaises(Exception) as ctx:
+                asyncio.run(web_app.get_project(bad_id))
+            self.assertEqual(getattr(ctx.exception, "status_code", None), 400)
+
+    def test_agent_cannot_purge_records(self):
+        import web.app as web_app
+
+        proposal = {
+            "id": "agent_test",
+            "type": "RESOLVE_REVIEW",
+            "params": {"case_id": "rv_test", "resolution": "purged"},
+        }
+        with self.assertRaises(Exception) as ctx:
+            asyncio.run(web_app._execute_agent_proposal(proposal))
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 403)
+
     def test_api_token_is_enforced_when_configured(self):
         from fastapi.testclient import TestClient
         import web.app as web_app

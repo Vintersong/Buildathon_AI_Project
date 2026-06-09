@@ -32,6 +32,8 @@ DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-6",
     # Free-tier HF router model — change via config.json "model" field
     "huggingface": "meta-llama/Llama-3.1-8B-Instruct",
+    # Groq — fast OpenAI-compatible inference; override via config.json "model".
+    "groq": "llama-3.1-8b-instant",
     "local": LM_STUDIO_MODEL,
 }
 
@@ -78,6 +80,8 @@ def complete(
         text = _complete_anthropic(messages, json_mode, temperature, model)
     elif provider == "huggingface":
         text = _complete_huggingface(messages, json_mode, temperature, model)
+    elif provider == "groq":
+        text = _complete_groq(messages, json_mode, temperature, model)
     else:
         text = _complete_gemini(messages, json_mode, temperature, model)
 
@@ -206,6 +210,28 @@ def _complete_huggingface(messages, json_mode, temperature, model) -> str:
         temperature=temperature,
         max_tokens=2048,
     )
+    return resp.choices[0].message.content or ""
+
+
+def _complete_groq(messages, json_mode, temperature, model) -> str:
+    """Groq via its OpenAI-compatible endpoint.
+
+    Set GROQ_API_KEY (or save via the Settings page) to a token from
+    https://console.groq.com/keys. Default model: llama-3.1-8b-instant.
+    Swap via config.json "model" field.
+    """
+    from openai import OpenAI
+
+    key = get_provider_api_key("groq")
+    if not key:
+        raise ValueError("No Groq API key configured")
+
+    client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=key)
+
+    kwargs: Dict[str, Any] = {"model": model, "messages": messages, "temperature": temperature}
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    resp = client.chat.completions.create(**kwargs)
     return resp.choices[0].message.content or ""
 
 

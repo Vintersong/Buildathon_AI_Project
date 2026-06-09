@@ -158,7 +158,7 @@ export function fetchAuditEvents(): Promise<AuditEvent[]> {
   return request<AuditEvent[]>(`${BASE}/audit`);
 }
 
-export type LlmProvider = 'gemini' | 'openai' | 'anthropic' | 'huggingface' | 'local';
+export type LlmProvider = 'gemini' | 'openai' | 'anthropic' | 'huggingface' | 'groq' | 'local';
 
 export interface AppConfig {
   provider: LlmProvider;
@@ -174,6 +174,8 @@ export interface AppConfig {
   anthropic_api_key_last4: string | null;
   huggingface_api_key_set: boolean;
   huggingface_api_key_last4: string | null;
+  groq_api_key_set: boolean;
+  groq_api_key_last4: string | null;
 }
 
 export interface AppConfigUpdate {
@@ -186,6 +188,7 @@ export interface AppConfigUpdate {
   openai_api_key?: string;
   anthropic_api_key?: string;
   huggingface_api_key?: string;
+  groq_api_key?: string;
 }
 
 export interface LmStudioStatus {

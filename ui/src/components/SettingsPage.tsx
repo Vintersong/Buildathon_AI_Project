@@ -8,7 +8,7 @@ interface SettingsPageProps {
   tasksCount: number;
 }
 
-type KeyProvider = 'gemini' | 'openai' | 'anthropic' | 'huggingface';
+type KeyProvider = 'gemini' | 'openai' | 'anthropic' | 'huggingface' | 'groq';
 type ModelOption = {
   id: string;
   label: string;
@@ -20,6 +20,7 @@ const PROVIDER_LABELS: Record<api.LlmProvider, string> = {
   openai: 'OpenAI (GPT)',
   anthropic: 'Anthropic (Claude)',
   huggingface: 'HuggingFace (free tier)',
+  groq: 'Groq',
   local: 'Local / OpenAI-compatible',
 };
 
@@ -28,6 +29,7 @@ const DEFAULT_MODELS: Record<api.LlmProvider, string> = {
   openai: 'gpt-5.4-mini',
   anthropic: 'claude-sonnet-4-6',
   huggingface: 'meta-llama/Llama-3.1-8B-Instruct',
+  groq: 'llama-3.1-8b-instant',
   local: 'local-model',
 };
 
@@ -57,17 +59,22 @@ const MODEL_OPTIONS: Record<api.LlmProvider, ModelOption[]> = {
     { id: 'google/gemma-4-26B-A4B-it', label: 'Gemma 4 26B', detail: 'Google open model — clean structured output' },
     { id: 'deepseek-ai/DeepSeek-V4-Flash', label: 'DeepSeek V4 Flash', detail: 'Fast reasoning model, free tier' },
   ],
+  groq: [
+    { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant', detail: 'Recommended — fastest Groq option for snappy reranking' },
+    { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B Versatile', detail: 'Higher quality general-purpose flagship' },
+    { id: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B', detail: 'Groq-hosted GPT-OSS — middle ground on speed/quality' },
+  ],
   local: [
     { id: 'local-model', label: 'Local model', detail: 'Use the active model served by LM Studio or another OpenAI-compatible server' },
   ],
 };
 
-const KEY_PROVIDERS: KeyProvider[] = ['gemini', 'openai', 'anthropic', 'huggingface'];
+const KEY_PROVIDERS: KeyProvider[] = ['gemini', 'openai', 'anthropic', 'huggingface', 'groq'];
 
 export default function SettingsPage({ candidatesCount, jobsCount, tasksCount }: SettingsPageProps) {
   const [config, setConfig] = useState<api.AppConfig | null>(null);
   const [lmStatus, setLmStatus] = useState<api.LmStudioStatus | null>(null);
-  const [keys, setKeys] = useState<Record<KeyProvider, string>>({ gemini: '', openai: '', anthropic: '', huggingface: '' });
+  const [keys, setKeys] = useState<Record<KeyProvider, string>>({ gemini: '', openai: '', anthropic: '', huggingface: '', groq: '' });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -106,9 +113,10 @@ export default function SettingsPage({ candidatesCount, jobsCount, tasksCount }:
         openai_api_key: keys.openai || undefined,
         anthropic_api_key: keys.anthropic || undefined,
         huggingface_api_key: keys.huggingface || undefined,
+        groq_api_key: keys.groq || undefined,
       });
       setConfig(saved);
-      setKeys({ gemini: '', openai: '', anthropic: '', huggingface: '' });
+      setKeys({ gemini: '', openai: '', anthropic: '', huggingface: '', groq: '' });
       const lm = await api.fetchLmStudioStatus();
       setLmStatus(lm);
       setMessage('Settings saved.');
@@ -132,6 +140,7 @@ export default function SettingsPage({ candidatesCount, jobsCount, tasksCount }:
     if (p === 'gemini') return { set: config.gemini_api_key_set, last4: config.gemini_api_key_last4 };
     if (p === 'openai') return { set: config.openai_api_key_set, last4: config.openai_api_key_last4 };
     if (p === 'anthropic') return { set: config.anthropic_api_key_set, last4: config.anthropic_api_key_last4 };
+    if (p === 'groq') return { set: config.groq_api_key_set, last4: config.groq_api_key_last4 };
     return { set: config.huggingface_api_key_set, last4: config.huggingface_api_key_last4 };
   };
   const modelOptions = MODEL_OPTIONS[config.provider];

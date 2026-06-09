@@ -34,6 +34,7 @@ from core.config import (
 )
 from core.ingest import ingest_file
 from core.path_utils import resolve_json_path
+from core.permissions import check_permission, PermissionError as ToolPermissionError
 from core.review import get_review_queue, resolve_case, has_open_cases, _clear_record_review_hold
 from core.events import log_event
 from core.security import anonymize_candidate_record
@@ -143,6 +144,8 @@ class AppConfigResponse(AppConfig):
     anthropic_api_key_last4: Optional[str] = None
     huggingface_api_key_set: bool = False
     huggingface_api_key_last4: Optional[str] = None
+    groq_api_key_set: bool = False
+    groq_api_key_last4: Optional[str] = None
 
 
 class AppConfigUpdate(AppConfig):
@@ -154,6 +157,7 @@ class AppConfigUpdate(AppConfig):
     openai_api_key: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     huggingface_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
 
 
 def load_app_config() -> AppConfig:
@@ -187,6 +191,8 @@ def _config_response() -> AppConfigResponse:
         anthropic_api_key_last4=get_provider_api_key_last4("anthropic"),
         huggingface_api_key_set=has_provider_api_key("huggingface"),
         huggingface_api_key_last4=get_provider_api_key_last4("huggingface"),
+        groq_api_key_set=has_provider_api_key("groq"),
+        groq_api_key_last4=get_provider_api_key_last4("groq"),
     )
 
 
@@ -210,7 +216,7 @@ async def lm_studio_status():
 
 @app.post("/api/config", response_model=AppConfigResponse)
 async def post_config(body: AppConfigUpdate):
-    key_fields = {"gemini_api_key", "openai_api_key", "anthropic_api_key", "huggingface_api_key"}
+    key_fields = {"gemini_api_key", "openai_api_key", "anthropic_api_key", "huggingface_api_key", "groq_api_key"}
     cfg = AppConfig(**body.model_dump(exclude=key_fields))
     if cfg.provider not in PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unknown provider: '{cfg.provider}'")
@@ -221,6 +227,7 @@ async def post_config(body: AppConfigUpdate):
             ("openai", body.openai_api_key),
             ("anthropic", body.anthropic_api_key),
             ("huggingface", body.huggingface_api_key),
+            ("groq", body.groq_api_key),
         ):
             if value is not None:
                 set_provider_api_key(provider, value.strip() or None)
@@ -1005,8 +1012,16 @@ def _project_event(event_type: str, **fields) -> None:
         print(f"[projects] audit log unavailable: {exc}")
 
 
+def _project_path(project_id: str) -> Path:
+    """Resolve a project file path, rejecting traversal IDs (see resolve_json_path)."""
+    try:
+        return resolve_json_path(PROJECTS_DIR, project_id, kind="project")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 def _load_project(project_id: str) -> dict:
-    path = PROJECTS_DIR / f"{project_id}.json"
+    path = _project_path(project_id)
     if not path.exists():
         raise HTTPException(status_code=404, detail="Project not found")
     return json.loads(path.read_text(encoding="utf-8"))
@@ -1014,7 +1029,7 @@ def _load_project(project_id: str) -> dict:
 
 def _save_project(data: dict) -> None:
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = PROJECTS_DIR / f"{data['id']}.json"
+    path = _project_path(data["id"])
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
@@ -1134,7 +1149,10 @@ async def run_project_match(project_id: str, top_n: int = 5):
 
     # Write a temporary requirement file reusing the project's criteria.
     tmp_req_id = f"_proj_tmp_{project_id}"
-    tmp_path = REQUIREMENTS_DIR / f"{tmp_req_id}.json"
+    try:
+        tmp_path = resolve_json_path(REQUIREMENTS_DIR, tmp_req_id, kind="job")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     REQUIREMENTS_DIR.mkdir(parents=True, exist_ok=True)
     now = utc_now_iso()
     req_data = {
@@ -1559,9 +1577,37 @@ def _candidate_ids_from_text(text: str, candidates: list) -> list[str]:
     return [cid for cid in dict.fromkeys(ids) if cid]
 
 
+# Map each agent action to a conceptual "tool" name so the shared permission
+# gate (core.permissions) runs on the live execution path instead of sitting
+# unused. An agent-driven purge resolution maps to the denied ``retention_purge``
+# tool: the agent must never delete/purge records, even though a human operator
+# still can via the review-queue UI.
+_AGENT_ACTION_TOOLS = {
+    "CREATE_JOB": "job_create",
+    "RUN_SHORTLIST": "shortlist_run",
+    "CREATE_OUTREACH_DRAFT": "outreach_draft",
+    "RESOLVE_REVIEW": "review_resolve",
+    "BULK_REFRESH_CANDIDATES": "bulk_refresh",
+    "PROCESS_INTAKE": "intake_process",
+}
+
+
+def _agent_tool_name(action_type: str, params: dict) -> str:
+    if action_type == "RESOLVE_REVIEW":
+        resolution = str(params.get("resolution", "")).lower()
+        if any(word in resolution for word in ("purge", "delete", "erase")):
+            return "retention_purge"
+    return _AGENT_ACTION_TOOLS.get(action_type, action_type.lower())
+
+
 async def _execute_agent_proposal(proposal: dict) -> AgentActionResult:
     action_type = proposal.get("type", "")
     params = proposal.get("params", {})
+
+    try:
+        check_permission(_agent_tool_name(action_type, params))
+    except ToolPermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
 
     async def with_heuristic_extraction(operation):
         from core import extract
@@ -1580,12 +1626,15 @@ async def _execute_agent_proposal(proposal: dict) -> AgentActionResult:
 
     if action_type == "RUN_SHORTLIST":
         body = AgentShortlistParams(**params)
-        result = generate_shortlist(body.req_id, top_n=body.top_n, use_llm_rerank=False)
+        # Rerank via the active provider (your configured key). PII is stripped by
+        # anonymize_candidate_record before any external call; generate_shortlist
+        # degrades gracefully to embedding/heuristic ranking when no LLM is reachable.
+        result = generate_shortlist(body.req_id, top_n=body.top_n, use_llm_rerank=True)
         data = []
         for item in result.get("results", []):
             rec_id = item.get("record_id", "")
             name = item.get("name") or rec_id
-            confidence = item.get("combined_score", item.get("llm_score", 0.0))
+            confidence = item.get("llm_score", item.get("combined_score", 0.0))
             data.append({
                 "id": rec_id,
                 "name": name,

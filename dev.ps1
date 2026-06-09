@@ -21,16 +21,19 @@ $py =
     elseif (Test-Path "$root\.venv\Scripts\python.exe") { "$root\.venv\Scripts\python.exe" }
     else   { "python" }
 
+# The frontend lives in ui/ (its own package.json / server.ts).
+$ui = "$root\ui"
+
 # First-run convenience: install frontend deps if they are missing.
-if (-not (Test-Path "$root\node_modules")) {
+if (-not (Test-Path "$ui\node_modules")) {
     Write-Host "Installing frontend dependencies (first run)..." -ForegroundColor Yellow
-    Push-Location $root
+    Push-Location $ui
     npm install
     Pop-Location
 }
 
 $backendCmd  = "Set-Location '$root'; & '$py' -m uvicorn web.app:app --host 127.0.0.1 --port 8080 --reload"
-$frontendCmd = "Set-Location '$root'; npm run dev"
+$frontendCmd = "Set-Location '$ui'; npm run dev"
 
 Write-Host "Backend  -> http://127.0.0.1:8080" -ForegroundColor Cyan
 Write-Host "Frontend -> http://localhost:3000" -ForegroundColor Cyan
